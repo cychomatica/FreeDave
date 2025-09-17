@@ -59,6 +59,7 @@ class Sequence:
         self.max_tokens = sampling_params.max_tokens
         self.ignore_eos = sampling_params.ignore_eos
         self.denoising_steps = sampling_params.denoising_steps
+        self.draft_steps = sampling_params.draft_steps
         self.remasking_strategy = sampling_params.remasking_strategy
         self.dynamic_threshold = sampling_params.dynamic_threshold
         self.mask_token_id = mask_token_id

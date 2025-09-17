@@ -6,7 +6,7 @@ experiment:
 
 
 
-model: "/abs/path/of/model" # absolute path of your model
+model: "/home/shutongw/.cache/huggingface/hub/models--Gen-Verse--TraDo-4B-Instruct/snapshots/69928229b67aeb72ca17d8feab568ebdc38b28ba" # absolute path of your model
 model_base: "trado" 
 
 
@@ -20,12 +20,13 @@ execute:
 
 rollout:
     tensor_parallel_size: 1 # set to 1 by default, if oom, try reduce max_active first, if still oom, set tensor_parallel_size to 8
-    max_active: 256
+    max_active: 32
     num_response_per_task: 3
     temperature: 1.0
     max_token: 2000 # max generation token num
     block_size: 4
     denoising_steps_per_block: 4
+    draft_steps: 2
     top_p: 1.0
     top_k: 0
     remasking_strategy: "low_confidence_dynamic" #"low_confidence_static""low_confidence_dynamic"

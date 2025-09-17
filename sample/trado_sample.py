@@ -536,6 +536,7 @@ if __name__ == "__main__":
             remasking_strategy=config.rollout.remasking_strategy,
             block_length=block_size,
             denoising_steps=config.rollout.denoising_steps_per_block,
+            draft_steps=config.rollout.draft_steps,
             dynamic_threshold=config.rollout.dynamic_threshold,
             stop_words           = stop_token_id_list
         )

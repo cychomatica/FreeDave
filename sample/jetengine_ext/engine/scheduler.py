@@ -19,17 +19,17 @@ class Scheduler:
         self.mask_token_id = config.mask_token_id
         self.block_manager = BlockManager(config.num_kvcache_blocks, config.kvcache_block_size)
         self.running: list[Sequence] = []
-        self.sample_pipe = LogitsPipe([
-                                Temperature(),      # Scale logits by temperature
-                                TopK(),             # Apply top-k filtering
-                                Softmax(),          # Convert logits to probabilities
-                                TopP(),             # Apply top-p filtering
-                            ])
-        self.sample_pipe_topk0 = LogitsPipe([
-                        Temperature(),      # Scale logits by temperature
-                        Softmax(),          # Convert logits to probabilities
-                        TopP(),             # Apply top-p filtering
-                        ])
+        # self.sample_pipe = LogitsPipe([
+        #                         Temperature(),      # Scale logits by temperature
+        #                         TopK(),             # Apply top-k filtering
+        #                         Softmax(),          # Convert logits to probabilities
+        #                         TopP(),             # Apply top-p filtering
+        #                     ])
+        # self.sample_pipe_topk0 = LogitsPipe([
+        #                 Temperature(),      # Scale logits by temperature
+        #                 Softmax(),          # Convert logits to probabilities
+        #                 TopP(),             # Apply top-p filtering
+        #                 ])
 
     def add(self, seq: Sequence):
         self.running.append(seq)
@@ -83,12 +83,26 @@ class Scheduler:
                 # Extract the part of the tensors relevant to this sequence
                 if seq.status == SequenceStatus.DENOISING:
                     block_len = seq.block_length
-                    if seq.top_k > 0:
-                        probs = self.sample_pipe(logits[start_idx : start_idx + block_len], temperature=seq.temperature, top_k=seq.top_k, top_p=seq.top_p)
-                    else:
-                        probs = self.sample_pipe_topk0(logits[start_idx : start_idx + block_len], temperature=seq.temperature, top_p=seq.top_p)
-                    seq_x0 = torch.multinomial(probs, num_samples=1).squeeze(-1) 
-                    seq_x0_p = torch.gather(probs, -1, seq_x0.unsqueeze(-1)).squeeze(-1)    
+                    # if seq.top_k > 0:
+                    #     probs = self.sample_pipe(logits[start_idx : start_idx + 
+                    #     block_len], temperature=seq.temperature, top_k=seq.top_k, 
+                    #     top_p=seq.top_p)
+                    # else:
+                    #     probs = self.sample_pipe_topk0(logits[start_idx : start_idx 
+                    #     + block_len], temperature=seq.temperature, top_p=seq.top_p)
+                    # seq_x0 = torch.multinomial(probs, num_samples=1).squeeze(-1) 
+                    # seq_x0_p = torch.gather(probs, -1, seq_x0.unsqueeze(-1)).squeeze
+                    # (-1)
+
+                    # Use native PyTorch sampling instead of flashinfer (this is the remaining old code)
+                    seq_x0, seq_x0_p = sample_with_temperature_topk_topp(
+                        logits[start_idx : start_idx + block_len], 
+                        temperature=seq.temperature, 
+                        top_k=seq.top_k, 
+                        top_p=seq.top_p
+                    )
+                    seq_x0 = seq_x0.squeeze(-1)
+                    seq_x0_p = seq_x0_p.squeeze(-1)    
                     
                     current_block_tensor = torch.tensor(seq.intermediate_block_tokens, device=logits.device)
                     mask_index = (current_block_tensor == self.mask_token_id)

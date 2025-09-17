@@ -194,3 +194,209 @@ def block_diffusion_generate(
 
     return x
 
+@torch.no_grad()
+def block_diffusion_generate_fast(
+        model,
+        prompt,
+        mask_id,
+        gen_length=128,
+        block_length=8,
+        denoising_steps=8,
+        draft_steps=4,
+        temperature=1.0,
+        top_k=0,
+        top_p=1.0,
+        remasking_strategy='low_confidence_dynamic',
+        confidence_threshold=0.85,
+        stopping_criteria_idx=None
+    ):
+
+    model.eval()
+    input_ids = prompt['input_ids']
+    prompt_length = input_ids.shape[1]
+    past_key_values = DynamicCache()
+
+    num_blocks = (prompt_length + gen_length +
+                  block_length - 1) // block_length
+    total_length = num_blocks * block_length
+
+    block_mask = torch.tril(torch.ones(
+        num_blocks, num_blocks, device=model.device))
+    block_diffusion_attention_mask = block_mask.repeat_interleave(block_length, dim=0)\
+                                               .repeat_interleave(block_length, dim=1).unsqueeze(0)
+    # block_priority_shift = torch.cat([torch.zeros(prompt.shape[1], device=x.device), 
+                                    # torch.arange(num_blocks-1, -1, -1, device=x.device).repeat_interleave(block_length)])
+
+    position_ids = torch.arange(total_length, device=model.device).unsqueeze(0)
+
+    x = torch.full((1, total_length), mask_id,
+                   dtype=torch.long, device=model.device)
+    x[:, :prompt_length] = input_ids
+    prefill_blocks = prompt_length // block_length
+    prefill_length = prefill_blocks * block_length
+
+    # Prefill stage
+    if prefill_length > 0:
+        cur_x = x[:, :prefill_length]
+        cur_attn_mask = block_diffusion_attention_mask[:,
+                                                       :prefill_length, :prefill_length]
+        if cur_attn_mask.dim() == 3:
+            cur_attn_mask = cur_attn_mask[:, None, :, :]
+        cur_position_ids = position_ids[:, :prefill_length]
+        model(cur_x,
+              attention_mask=cur_attn_mask,
+              position_ids=cur_position_ids,
+              past_key_values=past_key_values,
+              use_cache=True,
+              store_kv=True)
+
+    num_transfer_tokens = get_num_transfer_tokens(
+        block_length, denoising_steps)
+
+    num_fwrd = 0
+
+    # Decode stage
+    for num_block in range(prefill_blocks, num_blocks):
+        cur_x = x[:, num_block*block_length:(num_block+1)*block_length].clone()
+        cur_attn_mask = block_diffusion_attention_mask[
+            :, num_block*block_length:(num_block+1)*block_length, :(num_block+1)*block_length
+        ]
+        if cur_attn_mask.dim() == 3:
+            cur_attn_mask = cur_attn_mask[:, None, :, :]
+        cur_position_ids = position_ids[:, num_block *
+                                        block_length:(num_block+1)*block_length]
+
+        # First forward pass
+        step = 0
+        x0, x0_p = sample_step(model, cur_x, cur_attn_mask, cur_position_ids, past_key_values, temperature, top_k, top_p)
+    
+        while step < denoising_steps:
+
+            mask_index = (cur_x == mask_id)
+            if mask_index.sum() == 0:
+                break
+            
+            # Draft token filling from last forward pass
+            cur_draft_steps = min(draft_steps, denoising_steps - step)
+            if cur_draft_steps == 1:
+                cur_x = token_filling(cur_x, x0, x0_p, mask_id, remasking_strategy, confidence_threshold, num_transfer_tokens, step, cur_draft_steps)
+                break
+            
+            x_draft = token_filling(cur_x, x0, x0_p, mask_id, remasking_strategy, confidence_threshold, num_transfer_tokens, step, cur_draft_steps)
+            past_key_values.batch_repeat_interleave(x_draft.shape[0])
+
+            # New forward pass
+            x0_draft, x0_p_draft = sample_step(model, x_draft.clone(), cur_attn_mask, cur_position_ids, past_key_values, temperature, top_k, top_p)
+
+            # Target token filling from new forward pass
+            x_target = token_filling(x_draft.clone(), x0_draft, x0_p_draft, mask_id, remasking_strategy, confidence_threshold, num_transfer_tokens, step+1, 1)
+
+            # Draft tokens verification
+            x_draft = x_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:]) # [batch, cur_draft_steps, seq_len]
+            x_target = x_target.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:]) # [batch, cur_draft_steps, seq_len]
+            matched_draft_index = (x_target[:, :-1, :] == x_draft[:, 1:, :]).all(dim=-1)
+            matched_steps = torch.cumprod(matched_draft_index, dim=-1).sum(dim=-1) #NOTE: assert matched_steps.shape[0] == 1 for now
+
+            # Update current x, current kv cache, and forward pass intermediate results
+            cur_x = x_draft[:, matched_steps, :].squeeze(1)
+            x0 = x0_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
+            x0_p = x0_p_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
+            past_key_values.batch_select_indices(matched_steps)
+
+            # Update step
+            step += matched_steps + 1
+        # Store kv cache
+        model(cur_x,
+                attention_mask=cur_attn_mask,
+                position_ids=cur_position_ids,
+                past_key_values=past_key_values,
+                use_cache=True,
+                store_kv=True)
+
+        x[:, num_block*block_length:(num_block+1)*block_length] = cur_x
+        if stopping_criteria_idx is not None and any(stop_idx in x[:, prompt_length:] for stop_idx in stopping_criteria_idx):
+            break
+
+    return x
+
+@torch.no_grad()
+def sample_step(model, 
+                x, 
+                attention_mask, 
+                position_ids, 
+                past_key_values, 
+                temperature, 
+                top_k, 
+                top_p, 
+                ):
+
+    # Denosing
+    logits = model(x,
+                    attention_mask=attention_mask,
+                    position_ids=position_ids,
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                    store_kv=False).logits
+
+    # Sampling
+    x0, x0_p = sample_with_temperature_topk_topp(
+        logits,
+        temperature=temperature,
+        top_k=top_k,
+        top_p=top_p
+    )
+
+    return x0, x0_p
+
+@torch.no_grad()
+def token_filling(x, x0, x0_p, mask_id, remasking_strategy, confidence_threshold, num_transfer_tokens, step, draft_steps=1):
+
+    # Remasking strategy
+    x_draft = x.unsqueeze(1).expand(x.shape[0], draft_steps, *x.shape[1:]).clone() # (batch, draft_steps, seq_len)
+    mask_index = (x == mask_id)
+    mask_index_draft = (x_draft == mask_id)
+
+    # num_transfer_tokens_step = num_transfer_tokens[step: step + draft_steps].sum()
+
+    # Remasking strategy
+    if remasking_strategy == 'sequential':
+        transfer_index = torch.zeros_like(x_draft, dtype=torch.bool)
+        for j in range(x_draft.shape[0]):
+            for k in range(draft_steps):
+                if mask_index_draft[j, k].any():
+                    first_mask_index = mask_index_draft[j, k].nonzero(as_tuple=True)[
+                        0].min().item()
+                    transfer_index[j, k, first_mask_index:first_mask_index + num_transfer_tokens[step: step + k + 1].sum()] = True
+                else:
+                    raise ValueError(
+                        "No mask tokens found in the current block.")
+
+    elif remasking_strategy == 'low_confidence_static':
+        confidence = torch.where(mask_index, x0_p, -torch.inf)
+        transfer_index = torch.zeros_like(x_draft, dtype=torch.bool)
+        for j in range(confidence.shape[0]):
+            for k in range(draft_steps):
+                _, idx = torch.topk(confidence[j], num_transfer_tokens[step: step + k + 1].sum())
+                transfer_index[j, k, idx] = True
+
+    #TODO: adaptation
+    # elif remasking_strategy == 'low_confidence_dynamic':
+    #     confidence = torch.where(mask_index, x0_p, -torch.inf)
+    #     transfer_index = torch.zeros_like(x_draft, dtype=torch.bool)
+    #     for j in range(confidence.shape[0]):
+    #         high_conf_mask = confidence[j] > confidence_threshold
+    #         num_high_confidence = high_conf_mask.sum()
+    #         if num_high_confidence >= num_transfer_tokens_step:
+    #             transfer_index[j] = high_conf_mask
+    #         else:
+    #             _, idx = torch.topk(confidence[j], num_transfer_tokens_step)
+    #             transfer_index[j, idx] = True
+
+    else:
+        raise ValueError(
+            f"Unknown remasking strategy: {remasking_strategy}")
+
+    x_draft[transfer_index] = x0.unsqueeze(1).expand_as(x_draft)[transfer_index]
+    x_draft = x_draft.view(x.shape[0] * draft_steps, *x.shape[1:]) # (batch * draft_steps, seq_len)
+
+    return x_draft

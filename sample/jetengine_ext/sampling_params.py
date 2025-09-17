@@ -10,6 +10,7 @@ class SamplingParams:
     # Block Diffusion Parameters
     block_length: int = 4
     denoising_steps: int = 4
+    draft_steps: int = 1
     dynamic_threshold: float = 0.9
     topk: int = 0
     topp: float = 1

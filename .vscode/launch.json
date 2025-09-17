@@ -1,0 +1,51 @@
+{
+    // 使用 IntelliSense 了解相关属性。 
+    // 悬停以查看现有属性的描述。
+    // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "eval trado",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "eval.py",
+            "console": "integratedTerminal",
+            "args": [
+                "config=configs/trado_eval.yaml"
+            ],
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "7"
+            },
+            "subProcess": true
+        },
+        {
+            "name": "debug trado_sample directly",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "trado_sample.py",
+            "console": "integratedTerminal",
+            "args": [
+                "config=../configs/trado_eval.yaml"
+            ],
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "7"
+            },
+            "cwd": "${workspaceFolder}/sample"
+        },
+        {
+            "name": "eval trado (debug mode)",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "eval.py",
+            "console": "integratedTerminal",
+            "args": [
+                "config=configs/trado_eval.yaml",
+                "debug_mode=true"
+            ],
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "7"
+            },
+            "subProcess": false
+        }
+    ]
+}

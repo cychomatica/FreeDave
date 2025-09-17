@@ -144,9 +144,6 @@ def generate_with_prefix_cache(
 
     return DiffusionOutput(sequences=x, history=hist, nfe=nfe)
 
-
-
-
 def get_transfer_index(logits, temperature, target, mask_index, x, num_transfer_tokens, threshold=None):
     logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
     x0 = torch.argmax(logits_with_noise, dim=-1) # b, l
@@ -183,6 +180,160 @@ def get_transfer_index(logits, temperature, target, mask_index, x, num_transfer_
         return x0, selected
 
     confidence = x0_p.masked_fill(~mask_index, float("-inf"))
+    transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
+    for j in range(confidence.shape[0]):
+        k = int(num_transfer_tokens[j].item() if torch.is_tensor(num_transfer_tokens[j]) else num_transfer_tokens[j])
+        if k <= 0:
+            continue
+        _, sel = torch.topk(confidence[j], k=k)
+        transfer_index[j, sel] = True
+    return x0, transfer_index
+
+@ torch.no_grad()
+def generate_with_prefix_cache_fast(
+        model, prompt,
+        steps, gen_length, draft_length, block_length, temperature,
+        target, mask_id, further_horizon, use_cache, unmask_threshold
+    ) -> DiffusionOutput:
+    '''
+    Args:
+        model: Mask predictor.
+        prompt: A tensor of shape (1, L).
+    '''
+
+    cgws = further_horizon
+    B, L0 = prompt.shape
+    x = torch.full((B, L0 + gen_length), mask_id, dtype=torch.long, device=prompt.device)
+    max_length = L0 + gen_length
+    x[:, :L0] = prompt
+    assert gen_length % block_length == 0
+    num_blocks = gen_length // block_length
+    base, rem = divmod(steps, num_blocks)
+    steps_per_block = [base + (i < rem) for i in range(num_blocks)]
+    block_priority_shift = torch.cat([torch.zeros(L0, device=x.device), torch.arange(num_blocks-1, -1, -1, device=x.device).repeat_interleave(block_length)])
+
+    nfe = 0
+    hist: List[torch.Tensor] = []
+    
+    if use_cache:
+        out = model(x, use_cache=True)
+        pkv = out.past_key_values
+        # chop prefix out of past_kv to keep cache small
+        new_pkv = tuple(
+            tuple(t[:, :, :s] for t in layer) for layer in pkv
+        )
+        pkv = new_pkv
+    else:
+        out = model(x, use_cache=False)
+    nfe += 1
+
+    # speculative generation
+    cur_step = 0
+    while current_length < gen_length:
+        draft_steps = min(draft_length, gen_length - current_length)
+        if draft_steps == 1:
+            _, select_index = torch.topk(confidence, k=1, sorted=True, dim=-1)
+            select_tokens = torch.gather(x0, dim=-1, index=select_index)
+            for j in range(confidence.shape[0]):
+                x[j, select_index[j]] = select_tokens[j]
+            break
+        else:
+            # draft generation
+            x_spec = x.expand(x.shape[0], draft_steps, *x.shape[1:]).clone() # (bs, fwrd_steps, L)
+            _, draft_indexes = torch.topk(confidence, k=draft_steps, sorted=True, dim=-1)
+            draft_tokens = torch.gather(x0, dim=-1, index=draft_indexes)
+
+            # PERFORMANCE BOTTLENECK: This nested loop is very slow!
+            for j in range(confidence.shape[0]):
+                for k in range(draft_steps):
+                    x_spec[j, k, draft_indexes[j, :k+1]] = draft_tokens[j, :k+1]
+
+            # target tokens batch generation
+            x_spec = x_spec.view(x.shape[0] * draft_steps, *x.shape[1:]) # (bs * fwrd_steps, L)
+            x0_spec, confidence_spec = sample_step(model, x_spec, prompt_index, block_priority_shift, cfg_scale=cfg_scale, temperature=temperature, remasking=remasking, mask_id=mask_id)
+            nfe += 1
+
+            _, target_indexes = torch.topk(confidence_spec, k=1, dim=-1)
+            target_tokens = torch.gather(x0_spec, dim=-1, index=target_indexes)
+            target_indexes = target_indexes.view_as(draft_indexes)
+            target_tokens = target_tokens.view_as(draft_tokens)           
+
+            # verfication
+            matched_index = (target_tokens[:, :-1] == draft_tokens[:, 1:]) & (target_indexes[:, :-1] == draft_indexes[:, 1:])
+            # matched_index = target_indexes[:, :-1] == draft_indexes[:, 1:] # more aggressive strategy
+            matched_length = torch.cumprod(matched_index.int(), dim=-1).sum(dim=-1)
+    
+            # step jumping
+            x_spec = x_spec.view(x.shape[0], draft_steps, *x.shape[1:])
+            x0_spec = x0_spec.view(x.shape[0], draft_steps, *x.shape[1:])
+            confidence_spec = confidence_spec.view(x.shape[0], draft_steps, *x.shape[1:])
+
+            x = torch.gather(x_spec, dim=1, index=matched_length.expand(x.shape[0], 1, *x.shape[1:])).squeeze(1)
+            x0 = torch.gather(x0_spec, dim=1, index=matched_length.expand(x.shape[0], 1, *x.shape[1:])).squeeze(1)
+            confidence = torch.gather(confidence_spec, dim=1, index=matched_length.expand(x.shape[0], 1, *x.shape[1:])).squeeze(1)
+            
+            current_length += matched_length.item() + 1
+            max_matched_length.append(matched_length.item())
+
+    return x, nfe
+
+@ torch.no_grad()
+def sample_step(model, x, s, use_cache, temperature, target):
+
+    # first full forward to build prefix cache
+    if use_cache:
+        out = model(x, use_cache=True)
+        pkv = out.past_key_values
+        # chop prefix out of past_kv to keep cache small
+        new_pkv = tuple(
+            tuple(t[:, :, :s] for t in layer) for layer in pkv
+        )
+        pkv = new_pkv
+    else:
+        out = model(x, use_cache=False)
+
+    logits = out.logits
+    logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
+    x0 = torch.argmax(logits_with_noise, dim=-1) # b, l
+
+    if target == 'confidence':
+        p = F.softmax(logits.to(torch.float64), dim=-1)
+        x0_p = torch.squeeze(
+            torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
+    elif target == 'margin_confidence':
+        p = F.softmax(logits.to(torch.float64), dim=-1)
+        top2 = torch.topk(p, 2, dim=-1).values            # (b, l, 2)
+        x0_p = top2[..., 0] - top2[..., 1]                # Δ(top1, top2)
+    elif target == 'neg_entropy':
+        p = F.softmax(logits.to(torch.float64), dim=-1)
+        x0_p = -torch.sum(p * torch.log(p + 1e-10), dim=-1)  # –entropy
+    elif target == 'random':
+        x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
+    else:
+        raise NotImplementedError(target)
+
+    return x0, x0_p
+
+def token_filling(x, x0, x0_p, mask_id, num_transfer_tokens, step, draft_steps=1, threshold=None):
+
+    x_draft = x.unsqueeze(1).expand(x.shape[0], draft_steps, *x.shape[1:]).clone()
+    mask_index = (x == mask_id)
+    mask_index_draft = (x_draft == mask_id)
+
+    x0 = torch.where(mask_index, x0, x)
+
+    if threshold is not None:
+        selected = mask_index & (x0_p >= threshold)  # (B, T)
+
+        has_mask = mask_index.any(dim=-1)               # (B,)
+        none_sel = (~selected.any(dim=-1)) & has_mask   # (B,)
+        if none_sel.any():
+            best_idx = confidence.argmax(dim=-1)     # (B,)
+            rows = torch.nonzero(none_sel, as_tuple=False).squeeze(-1)
+            selected[rows, best_idx[rows]] = True
+
+        return x0, selected
+
     transfer_index = torch.zeros_like(x0, dtype=torch.bool, device=x0.device)
     for j in range(confidence.shape[0]):
         k = int(num_transfer_tokens[j].item() if torch.is_tensor(num_transfer_tokens[j]) else num_transfer_tokens[j])

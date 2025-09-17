@@ -4,7 +4,7 @@ experiment:
     node_index: 0 # no need to change
 
 
-model: "/abs/path/of/model" # absolute path of your model
+model: "/home/shutongw/.cache/huggingface/hub/models--GSAI-ML--LLaDA-8B-Instruct/snapshots/9275bf8f5a5687507189baf4657e91c51b2be338" # absolute path of your model
 model_base: "llada" # set llada for LLaDA and MMaDA
 
 # dataset you want to eval on, you need to download first, you can also modify your own dataset, see instructions in ./data
