@@ -15,16 +15,16 @@ def get_config():
     return conf
 
 def get_prompt(data_i, system_prompts):
-    return Template(system_prompts).render(problem = data_i["question"])
+    return Template(system_prompts).render(problem = data_i['question'])
 
 def get_system_prompts(data_type, start_with_think):
-    if data_type == "code":
+    if data_type == 'code':
         code_eval = True
         system_prompts_function = '''<|im_start|>user\n{{problem}}\nPlace your code within a single Python code block ```python ```. Do not include more than one code block. <|im_end|>\n<|im_start|>assistant\n'''
         system_prompts_stdio = '''<|im_start|>user\nThis is the problem:\n{{problem}}\nYou should put your code in ```python ```. Use input() to read input and print() to produce output in your script. <|im_end|>\n<|im_start|>assistant\n'''
         if start_with_think:
             system_prompts_stdio = '''<|im_start|>user\nThis is the problem:\n{{problem}}\nYou should put your code in ```python ```. Use input() to read input and print() to produce output in your script. <|im_end|>\n<|im_start|>assistant<think>\n'''
-    elif data_type == "option":
+    elif data_type == 'option':
         system_prompts = '''<|im_start|>user\nThis is the problem:\n{{problem}}\nYou need to think step by step and put the final option (A, B, C, or D only—no other character) in \\boxed{}. <|im_end|>\n<|im_start|>assistant\n'''
         if start_with_think:
             system_prompts = '''<|im_start|>user\nThis is the problem:\n{{problem}}\nYou need to think step by step and put the final option (A, B, C, or D only—no other character) in \\boxed{}. <|im_end|>\n<|im_start|>assistant<think>\n'''
@@ -43,15 +43,15 @@ def data_prepare(data_type, data_path, start_with_think):
     system_prompts = get_system_prompts(data_type, start_with_think)
 
     for i in range(len(data)):
-        data[i]["prompt"] = get_prompt(data[i], system_prompts)
-        data[i]["full_output"] = []
-        data[i]["cleaned_output"] = []
-        data[i]["extracted_output"] = []
-        data[i]["step_map"] = []
-        data[i]["response_tokens"] = []
-        # data[i]["response_length"] = []
-        data[i]["response_time"] = []
-        data[i]["response_nfe"] = []
+        data[i]['prompt'] = get_prompt(data[i], system_prompts)
+        data[i]['full_output'] = []
+        data[i]['cleaned_output'] = []
+        data[i]['extracted_output'] = []
+        data[i]['step_map'] = []
+        data[i]['response_tokens'] = []
+        # data[i]['response_length'] = []
+        data[i]['response_time'] = []
+        data[i]['response_nfe'] = []
         
     
     return data
@@ -60,7 +60,7 @@ def extract_final_boxed_answer(s: str):
     tag = r'\boxed{'
     start = s.rfind(tag)          # last \boxed{
     if start == -1:
-        return "Can not extract the answer!"
+        return 'Can not extract the answer!'
 
     i = start + len(tag)
     depth = 1                    # we are already inside one '{'
@@ -77,11 +77,12 @@ def extract_final_boxed_answer(s: str):
         buf.append(ch)
         i += 1
 
-    return ''.join(buf) if depth == 0 else "Can not extract the answer!"
+    return ''.join(buf) if depth == 0 else 'Can not extract the answer!'
 
 def output_process(data_type, data):
     for i in range(len(data)):
-        data[i]["extracted_output"] = extract_final_boxed_answer(data[i]["full_output"])
+        for each_output in data[i]['full_output']:
+            data[i]['extracted_output'].append(extract_final_boxed_answer(each_output))
     return data
 
 def reward(config):
@@ -92,7 +93,7 @@ def reward(config):
 
     sampling_mode = 'normal' if config.rollout.draft_steps == 1 else f'fast-draft={config.rollout.draft_steps}'
     outputs_name = f'{pretrained_model}-{sampling_mode}-block_size={config.rollout.block_size}-block_denoising_steps={config.rollout.denoising_steps_per_block}-{dataset}.json'
-    outputs_dir = os.path.join(config.experiment.project, 'temp_data')
+    outputs_dir = os.path.join(project_name, 'temp_data')
 
     with open(os.path.join(outputs_dir, outputs_name), 'r') as f:
         data = json.load(f)
@@ -101,17 +102,21 @@ def reward(config):
     extracted_output_list = []
     ground_truth_list = []
     response_length_list = []
+    response_time_list = []
+    response_nfe_list = []
     for i in range(len(data)):
         
-        # response_length_list = response_length_list + data[i]["response_length"]
-        response_length_list = response_length_list + data[i]["response_tokens"]
-        index_list = index_list + [i] * len(data[i]["extracted_output"])
-        extracted_output_list = extracted_output_list + data[i]["extracted_output"]
-        if config.dataset.data_type == "math":
-            data[i]["correctness"] = []
-            ground_truth_list = ground_truth_list + [data[i]["ground_truth_answer"]] * len(data[i]["extracted_output"])
+        # response_length_list = response_length_list + data[i]['response_length']
+        response_time_list = response_time_list + data[i]['response_time']
+        response_nfe_list = response_nfe_list + data[i]['response_nfe']
+        response_length_list = response_length_list + data[i]['response_tokens']
+        index_list = index_list + [i] * len(data[i]['extracted_output'])
+        extracted_output_list = extracted_output_list + data[i]['extracted_output']
+        if config.dataset.data_type == 'math':
+            data[i]['correctness'] = []
+            ground_truth_list = ground_truth_list + [data[i]['ground_truth_answer']] * len(data[i]['extracted_output'])
 
-    if config.dataset.data_type == "math":
+    if config.dataset.data_type == 'math':
 
         nest_asyncio.apply()
 
@@ -126,7 +131,7 @@ def reward(config):
         correctness_list = asyncio.run(get_correctness())
         for i in range(len(index_list)):
             index_i = index_list[i]
-            data[index_i]["correctness"].append(correctness_list[i])
+            data[index_i]['correctness'].append(correctness_list[i])
 
     def z_score_normalize(lst):
         mean = sum(lst) / len(lst)
@@ -141,37 +146,39 @@ def reward(config):
         new_lst[-t:] = [new_val] * t
         return new_lst
 
-    if config.dataset.data_type == "math":
+    if config.dataset.data_type == 'math':
         acc = sum(correctness_list)/len(correctness_list)
     else:
         num_task   = 0
         num_correct_task = 0
         for x in data:
-            for y in x["correctness"]:
+            for y in x['correctness']:
                 num_correct_task += all(y)
                 num_task += 1
         acc = num_correct_task / num_task if num_task else 0
 
     if config.rollout.output_unmasking_history == False:
         for i in range(len(data)):
-            data[i]["step_map"] = []
+            data[i]['step_map'] = []
         
-    with open(os.path.join(outputs_dir, outputs_name), "w", encoding="utf-8") as f:
+    with open(os.path.join(outputs_dir, outputs_name), 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-    results_dir = os.path.join(config.experiment.project, 'results')
+    results_dir = os.path.join(project_name, 'results')
     results_name = f'{pretrained_model}-{sampling_mode}-block_size={config.rollout.block_size}-block_denoising_steps={config.rollout.denoising_steps_per_block}-{dataset}.txt'
     os.makedirs(results_dir, exist_ok=True)
-    with open(os.path.join(results_dir, results_name), "a") as f:
+    with open(os.path.join(results_dir, results_name), 'a') as f:
         # Save + print
         def save_and_print(text):
-            cprint("\n\n\n" + text, color="green")
-            f.write(text + "\n")
+            cprint('\n\n\n' + text, color='green')
+            f.write(text + '\n')
         
         avg_len = sum(response_length_list)/len(response_length_list)
+        avg_time = sum(response_time_list)/len(response_time_list)
+        avg_nfe = sum(response_nfe_list)/len(response_nfe_list)
 
-        save_and_print(f"acc: {acc}\navg length: {avg_len}")
+        save_and_print(f'acc: {acc}\navg length: {avg_len}\navg time: {avg_time}\navg nfe: {avg_nfe}')
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     config = get_config()
     reward(config)

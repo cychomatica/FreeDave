@@ -5,10 +5,10 @@
     "version": "0.2.0",
     "configurations": [
         {
-            "name": "eval trado",
+            "name": "reward",
             "type": "debugpy",
             "request": "launch",
-            "program": "eval.py",
+            "program": "utils.py",
             "console": "integratedTerminal",
             "args": [
                 "config=configs/trado_eval.yaml"
@@ -16,7 +16,6 @@
             "env": {
                 "CUDA_VISIBLE_DEVICES": "7"
             },
-            "subProcess": true
         },
         {
             "name": "debug trado_sample directly",
@@ -36,7 +35,7 @@
             "name": "my own eval trado",
             "type": "debugpy",
             "request": "launch",
-            "program": "my_own_eval/trado_eval.py",
+            "program": "trado_eval.py",
             "console": "integratedTerminal",
             "args": [
                 "config=configs/trado_eval.yaml"

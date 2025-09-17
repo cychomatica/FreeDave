@@ -1,5 +1,5 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from generate import block_diffusion_generate, block_diffusion_generate_fast
+from trado_generate import block_diffusion_generate, block_diffusion_generate_fast
 from monitor_utils import ForwardHookCounter
 import time
 import json, os
@@ -102,5 +102,3 @@ if __name__ == '__main__':
     
     with open(os.path.join(save_dir, save_filename), 'w') as f:
         json.dump(data, f, indent=4)
-
-        

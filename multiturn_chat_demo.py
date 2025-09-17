@@ -1,5 +1,5 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from generate import block_diffusion_generate, block_diffusion_generate_fast
+from trado_generate import block_diffusion_generate, block_diffusion_generate_fast
 from monitor_utils import ForwardHookCounter
 import time
 
@@ -30,7 +30,7 @@ while True:
             prompt=tokens,
             mask_id=151669,
             gen_length=256,
-            block_length=16, denoising_steps=16,
+            block_length=4, denoising_steps=4,
             temperature=1.0, top_k=0, top_p=1.0,
             remasking_strategy="low_confidence_static",
             confidence_threshold=0.9
@@ -50,7 +50,7 @@ while True:
             prompt=tokens,
             mask_id=151669,
             gen_length=256,
-            block_length=16, denoising_steps=16, draft_steps=8,
+            block_length=4, denoising_steps=4, draft_steps=4,
             temperature=1.0, top_k=0, top_p=1.0,
             remasking_strategy="low_confidence_static",
             confidence_threshold=0.9
@@ -61,5 +61,3 @@ while True:
     print('-'*100)
     print('Fast generation: (time: {:.4f} seconds; num of forward passes: {}; avg step forward time: {:.4f} seconds)'.format(end_time - start_time, forward_counter.counter.count, (end_time - start_time) / forward_counter.counter.count))
     print(cleaned_text)
-
-    
