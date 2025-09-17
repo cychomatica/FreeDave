@@ -33,19 +33,19 @@
             "cwd": "${workspaceFolder}/sample"
         },
         {
-            "name": "eval trado (debug mode)",
+            "name": "my own eval trado",
             "type": "debugpy",
             "request": "launch",
-            "program": "eval.py",
+            "program": "my_own_eval/trado_eval.py",
             "console": "integratedTerminal",
             "args": [
-                "config=configs/trado_eval.yaml",
-                "debug_mode=true"
+                "config=configs/trado_eval.yaml"
             ],
             "env": {
-                "CUDA_VISIBLE_DEVICES": "7"
+                "CUDA_VISIBLE_DEVICES": "7",
+                "PYTHONPATH": "${workspaceFolder}"
             },
-            "subProcess": false
+            "cwd": "${workspaceFolder}"
         }
     ]
 }

@@ -180,3 +180,100 @@ class Scheduler:
         self.running = [seq for seq in self.running if not seq.is_finished]
         for seq in finished_seqs:
             self.block_manager.deallocate(seq)
+
+    def postprocess_fast(self, seqs: list[Sequence], logits: torch.Tensor, run_type: RunType):
+        if run_type == RunType.PREFILL:
+            for seq in seqs:
+                seq.num_cached_tokens = seq.num_prefill_tokens
+                seq.status = SequenceStatus.DENOISING
+        
+        elif run_type == RunType.DENOISE:
+            start_idx = 0
+            for seq in seqs:
+                if seq.status == SequenceStatus.DENOISING:
+                    block_len = seq.block_length
+                    seq_x0, seq_x0_p = sample_with_temperature_topk_topp(
+                        logits[start_idx : start_idx + block_len], 
+                        temperature=seq.temperature, 
+                        top_k=seq.top_k, 
+                        top_p=seq.top_p
+                    )
+                    seq_x0 = seq_x0.squeeze(-1)
+                    seq_x0_p = seq_x0_p.squeeze(-1)    
+                    
+                    current_block_tensor = torch.tensor(seq.intermediate_block_tokens, device=logits.device)
+                    mask_index = (current_block_tensor == self.mask_token_id)
+                    num_to_transfer = seq.num_transfer_tokens_per_step[seq.current_denoising_step]
+                    
+                    transfer_index = torch.zeros_like(seq_x0, dtype=torch.bool)
+                    
+                    if seq.remasking_strategy == 'sequential':
+                        if mask_index.any():
+                            first_mask_pos = mask_index.nonzero(as_tuple=True)[0].min().item()
+                            end_pos = min(first_mask_pos + num_to_transfer, block_len)
+                            transfer_index[first_mask_pos:end_pos] = True
+                    
+                    elif 'low_confidence_static' in seq.remasking_strategy:
+                        confidence = torch.where(mask_index, seq_x0_p, -np.inf)
+                        # For dynamic, add threshold logic here if desired
+                        _, top_indices = torch.topk(confidence, num_to_transfer)
+                        transfer_index[top_indices] = True
+                    
+                    elif 'low_confidence_dynamic' in seq.remasking_strategy:
+                        confidence = torch.where(mask_index, seq_x0_p, -np.inf)
+                        transfer_index = torch.where(confidence > seq.dynamic_threshold, True, False)
+                        if sum(transfer_index) < num_to_transfer:
+                            _, top_indices = torch.topk(confidence, num_to_transfer)
+                            transfer_index[top_indices] = True
+                        num_to_transfer = transfer_index.sum().item() if transfer_index.sum().item() > 0 else num_to_transfer
+
+                    # update
+                    new_block_list = current_block_tensor.tolist()
+                    accepted_tokens = seq_x0[transfer_index].tolist()
+                    original_indices = transfer_index.nonzero(as_tuple=True)[0].tolist()
+
+
+
+
+
+                    # newly added
+                    if seq.block_first_unmask_steps is None or len(seq.block_first_unmask_steps) != block_len:
+                        seq.block_first_unmask_steps = [0] * block_len
+                    first_time_global = seq.global_denoising_step + 1
+                    for idx in original_indices:
+                        if seq.block_first_unmask_steps[idx] == 0:
+                            seq.block_first_unmask_steps[idx] = first_time_global
+
+
+
+
+                    for idx, token in zip(original_indices, accepted_tokens):
+                        new_block_list[idx] = token
+                    seq.intermediate_block_tokens = new_block_list
+                    
+                    seq.current_denoising_step += 1
+                    seq.global_denoising_step += 1
+                    
+                    # Check if block is fully denoised
+                    is_fully_denoised = (self.mask_token_id not in seq.intermediate_block_tokens) or \
+                                        (seq.current_denoising_step >= seq.denoising_steps)
+
+                    if is_fully_denoised:
+                        # Block is done, commit it and check if generation is finished
+                        seq.status = SequenceStatus.FINISHED if seq.is_finished else SequenceStatus.SAVING
+                    seq.num_to_transfer = num_to_transfer
+                    
+                elif seq.status == SequenceStatus.SAVING:
+                    # If saving, commit the block and start a new one
+                    seq.commit_block(seq.intermediate_block_tokens)
+                    seq.num_to_transfer = 0
+                    if not seq.is_finished:
+                        seq.start_new_block()
+
+                start_idx += seq.block_length
+                
+        # Filter out finished sequences from the running list
+        finished_seqs = [seq for seq in self.running if seq.is_finished]
+        self.running = [seq for seq in self.running if not seq.is_finished]
+        for seq in finished_seqs:
+            self.block_manager.deallocate(seq)

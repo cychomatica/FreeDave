@@ -6,13 +6,13 @@ experiment:
 
 
 
-model: "/home/shutongw/.cache/huggingface/hub/models--Gen-Verse--TraDo-4B-Instruct/snapshots/69928229b67aeb72ca17d8feab568ebdc38b28ba" # absolute path of your model
+model: "Gen-Verse/TraDo-4B-Instruct" # absolute path of your model
 model_base: "trado" 
 
 
 # dataset you want to eval on, you need to download first, you can also modify your own dataset, see instructions in ./data
 dataset:
-    eval_dataset: "MATH500" #"MBPP""MATH500""GSM8K""AIME2024""GPQA""LiveCodeBench""HumanEval""LiveBench"
+    eval_dataset: "AIME2024" #"MBPP""MATH500""GSM8K""AIME2024""GPQA""LiveCodeBench""HumanEval""LiveBench"
     data_type: "math" #"code""math"
 
 execute:
@@ -23,13 +23,13 @@ rollout:
     max_active: 32
     num_response_per_task: 3
     temperature: 1.0
-    max_token: 2000 # max generation token num
-    block_size: 4
-    denoising_steps_per_block: 4
-    draft_steps: 2
+    max_token: 1024 # max generation token num
+    block_size: 16
+    denoising_steps_per_block: 16
+    draft_steps: 8 #8
     top_p: 1.0
     top_k: 0
-    remasking_strategy: "low_confidence_dynamic" #"low_confidence_static""low_confidence_dynamic"
+    remasking_strategy: "low_confidence_static" #"low_confidence_static""low_confidence_dynamic"
     dynamic_threshold: 0.9
     start_with_think: False # if not reasoning model, set to False, otherwise True
     output_unmasking_history: True
