@@ -23,10 +23,10 @@ rollout:
     max_active: 32
     num_response_per_task: 3
     temperature: 1.0
-    max_token: 2048 # max generation token num
+    max_token: 256 # max generation token num; 2048 for AIME2024 by default
     block_size: 4 # 4, 8, 16, 32
     denoising_steps_per_block: 4 # 4, 8, 16, 32
-    draft_steps: 1 # 1, 2, 4, 8
+    draft_steps: 8 # 1, 2, 4, 8
     top_p: 1.0
     top_k: 0
     remasking_strategy: "low_confidence_static" #"low_confidence_static""low_confidence_dynamic"

@@ -71,7 +71,7 @@ while True:
             prompt=tokens,
             mask_id=151669,
             gen_length=256,
-            block_length=4, denoising_steps=4, draft_steps=4,
+            block_length=4, denoising_steps=4, draft_steps=8,
             temperature=1.0, top_k=1, top_p=1.0,
             remasking_strategy="low_confidence_static",
             confidence_threshold=0.9

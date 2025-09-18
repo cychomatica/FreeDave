@@ -378,8 +378,9 @@ def block_diffusion_generate_fast_v1(
     # TODO: dynamic block
 
     # Decode stage
-    gen_blocks = 0
-    while gen_blocks < num_blocks - prefill_blocks:
+    # gen_blocks = 0
+    # while gen_blocks < num_blocks - prefill_blocks:
+    for gen_blocks in range(num_blocks - prefill_blocks):
 
         # NOTE: assume block_length == denoising_steps for now
         cur_num_draft_blocks = min(math.ceil(draft_steps / denoising_steps), num_blocks - prefill_blocks - 1 - gen_blocks)
@@ -395,57 +396,54 @@ def block_diffusion_generate_fast_v1(
         # First forward pass
         # step = 0
         step = (cur_x != mask_id).sum()
-        x0, x0_p = sample_step(model, cur_x, cur_attn_mask, cur_position_ids, past_key_values, temperature, top_k, top_p)
-    
-        while step < denoising_steps:
+        if step < denoising_steps:
+            x0, x0_p = sample_step(model, cur_x, cur_attn_mask, cur_position_ids, past_key_values, temperature, top_k, top_p)
+            while step < denoising_steps:
 
-            mask_index = (cur_x == mask_id)
-            if mask_index.sum() == 0:
-                break
-            
-            # Draft token filling from last forward pass
-            if gen_blocks < num_blocks - prefill_blocks - 1:
-                cur_draft_steps = min(draft_steps, denoising_steps * cur_num_draft_blocks)
-            else:
-                cur_draft_steps = min(draft_steps, denoising_steps - step)
-            if cur_draft_steps == 1:
-                cur_x = token_filling(cur_x, x0, x0_p, mask_id, remasking_strategy, confidence_threshold, cur_num_transfer_tokens, step, cur_draft_steps, block_priority_shift)
-                break
-            
-            x_draft = token_filling(cur_x, x0, x0_p, mask_id, remasking_strategy, confidence_threshold, cur_num_transfer_tokens, step, cur_draft_steps, block_priority_shift)
-            past_key_values.batch_repeat_interleave(x_draft.shape[0])
+                mask_index = (cur_x == mask_id)
+                if mask_index[:, :block_length].sum() == 0:
+                    break
+                
+                # Draft token filling from last forward pass
+                if gen_blocks < num_blocks - prefill_blocks - 1:
+                    cur_draft_steps = min(draft_steps, denoising_steps * cur_num_draft_blocks)
+                else:
+                    cur_draft_steps = min(draft_steps, denoising_steps - step)
+                if cur_draft_steps == 1:
+                    cur_x = token_filling(cur_x, x0, x0_p, mask_id, remasking_strategy, confidence_threshold, cur_num_transfer_tokens, step, cur_draft_steps, block_priority_shift)
+                    break
+                
+                x_draft = token_filling(cur_x, x0, x0_p, mask_id, remasking_strategy, confidence_threshold, cur_num_transfer_tokens, step, cur_draft_steps, block_priority_shift)
+                past_key_values.batch_repeat_interleave(x_draft.shape[0])
 
-            # New forward pass
-            x0_draft, x0_p_draft = sample_step(model, x_draft.clone(), cur_attn_mask, cur_position_ids, past_key_values, temperature, top_k, top_p)
+                # New forward pass
+                x0_draft, x0_p_draft = sample_step(model, x_draft.clone(), cur_attn_mask, cur_position_ids, past_key_values, temperature, top_k, top_p)
 
-            # Target token filling from new forward pass
-            x_target = token_filling(x_draft.clone(), x0_draft, x0_p_draft, mask_id, remasking_strategy, confidence_threshold, cur_num_transfer_tokens, step+1, 1, block_priority_shift)
+                # Target token filling from new forward pass
+                x_target = token_filling(x_draft.clone(), x0_draft, x0_p_draft, mask_id, remasking_strategy, confidence_threshold, cur_num_transfer_tokens, step+1, 1, block_priority_shift)
 
-            # Draft tokens verification
-            x_draft = x_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:]) # [batch, cur_draft_steps, seq_len]
-            x_target = x_target.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:]) # [batch, cur_draft_steps, seq_len]
-            matched_draft_index = (x_target[:, :-1, :] == x_draft[:, 1:, :]).all(dim=-1)
-            matched_steps = torch.cumprod(matched_draft_index, dim=-1).sum(dim=-1) #NOTE: assert matched_steps.shape[0] == 1 for now
+                # Draft tokens verification
+                x_draft = x_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:]) # [batch, cur_draft_steps, seq_len]
+                x_target = x_target.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:]) # [batch, cur_draft_steps, seq_len]
+                matched_draft_index = (x_target[:, :-1, :] == x_draft[:, 1:, :]).all(dim=-1)
+                matched_steps = torch.cumprod(matched_draft_index, dim=-1).sum(dim=-1) #NOTE: assert matched_steps.shape[0] == 1 for now
 
-            # Update current x, current kv cache, and forward pass intermediate results
-            cur_x = x_draft[:, matched_steps, :].squeeze(1)
-            x0 = x0_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
-            x0_p = x0_p_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
-            past_key_values.batch_select_indices(matched_steps)
-            
-            # Update step
-            step += matched_steps.item() + 1
+                # Update current x, current kv cache, and forward pass intermediate results
+                cur_x = x_draft[:, matched_steps, :].squeeze(1)
+                x0 = x0_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
+                x0_p = x0_p_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
+                past_key_values.batch_select_indices(matched_steps)
+                
+                # Update step
+                step += matched_steps.item() + 1
 
-            # NOTE: more aggressive matching
-            # matched_select_index = (x_target[:, :-1, :] == x_draft[:, 1:, :]).prod(dim=1).bool()
-            # cur_x[matched_select_index] = x_draft[:, -1, :][matched_select_index]
-            # x0[matched_select_index] = x0_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, -1, :][matched_select_index]
-            # x0_p[matched_select_index] = x0_p_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, -1, :][matched_select_index]
-            # past_key_values.batch_select_indices(torch.tensor([-1], device=x.device))
-
-            # step += matched_select_index.sum() + 1
-
-            
+                # NOTE: more aggressive matching (not ready yet)
+                # matched_select_index = (x_target[:, :-1, :] == x_draft[:, 1:, :]).prod(dim=1).bool()
+                # cur_x[matched_select_index] = x_draft[:, -1, :][matched_select_index]
+                # x0[matched_select_index] = x0_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, -1, :][matched_select_index]
+                # x0_p[matched_select_index] = x0_p_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, -1, :][matched_select_index]
+                # past_key_values.batch_select_indices(torch.tensor([-1], device=x.device))
+                # step += matched_select_index.sum() + 1
 
         # Cache current block
         model(cur_x[:, :block_length],
@@ -457,9 +455,8 @@ def block_diffusion_generate_fast_v1(
 
         # Fill current block; update prefill_length and num_block
         x[:, prefill_length:prefill_length + (cur_num_draft_blocks+1) * block_length] = cur_x
-        # x[:, prefill_length:prefill_length + block_length] = cur_x
         prefill_length += block_length
-        gen_blocks += 1
+        # gen_blocks += 1
 
         if stopping_criteria_idx is not None and any(stop_idx in x[:, prompt_length:] for stop_idx in stopping_criteria_idx):
             break
