@@ -4,6 +4,7 @@
     // 欲了解更多信息，请访问: https://go.microsoft.com/fwlink/?linkid=830387
     "version": "0.2.0",
     "configurations": [
+
         {
             "name": "reward",
             "type": "debugpy",
@@ -40,6 +41,21 @@
             "args": [
                 "config=configs/trado_eval.yaml"
             ],
+            "env": {
+                "CUDA_VISIBLE_DEVICES": "7",
+                "PYTHONPATH": "${workspaceFolder}"
+            },
+            "cwd": "${workspaceFolder}"
+        },
+        {
+            "name": "chat",
+            "type": "debugpy",
+            "request": "launch",
+            "program": "multiturn_chat_demo.py",
+            "console": "integratedTerminal",
+            // "args": [
+            //     "config=configs/trado_eval.yaml"
+            // ],
             "env": {
                 "CUDA_VISIBLE_DEVICES": "7",
                 "PYTHONPATH": "${workspaceFolder}"

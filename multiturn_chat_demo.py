@@ -1,5 +1,5 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from trado_generate import block_diffusion_generate, block_diffusion_generate_fast
+from trado_generate import block_diffusion_generate, block_diffusion_generate_fast, block_diffusion_generate_fast_v1
 from monitor_utils import ForwardHookCounter
 import time
 
@@ -31,7 +31,7 @@ while True:
             mask_id=151669,
             gen_length=256,
             block_length=4, denoising_steps=4,
-            temperature=1.0, top_k=0, top_p=1.0,
+            temperature=1.0, top_k=1, top_p=1.0,
             remasking_strategy="low_confidence_static",
             confidence_threshold=0.9
         )
@@ -51,7 +51,7 @@ while True:
             mask_id=151669,
             gen_length=256,
             block_length=4, denoising_steps=4, draft_steps=4,
-            temperature=1.0, top_k=0, top_p=1.0,
+            temperature=1.0, top_k=1, top_p=1.0,
             remasking_strategy="low_confidence_static",
             confidence_threshold=0.9
         )
@@ -59,5 +59,26 @@ while True:
     output_text = tokenizer.decode(output_ids[0], skip_special_tokens=False)
     cleaned_text = output_text.replace('<|MASK|>', '').replace('<|endoftext|>', '')
     print('-'*100)
-    print('Fast generation: (time: {:.4f} seconds; num of forward passes: {}; avg step forward time: {:.4f} seconds)'.format(end_time - start_time, forward_counter.counter.count, (end_time - start_time) / forward_counter.counter.count))
+    print('Fast generation v0: (time: {:.4f} seconds; num of forward passes: {}; avg step forward time: {:.4f} seconds)'.format(end_time - start_time, forward_counter.counter.count, (end_time - start_time) / forward_counter.counter.count))
+    print(cleaned_text)
+
+
+    forward_counter.reset_count()
+    start_time = time.time()
+    with forward_counter.count_context():
+        output_ids = block_diffusion_generate_fast_v1(
+            model,
+            prompt=tokens,
+            mask_id=151669,
+            gen_length=256,
+            block_length=4, denoising_steps=4, draft_steps=4,
+            temperature=1.0, top_k=1, top_p=1.0,
+            remasking_strategy="low_confidence_static",
+            confidence_threshold=0.9
+        )
+    end_time = time.time()
+    output_text = tokenizer.decode(output_ids[0], skip_special_tokens=False)
+    cleaned_text = output_text.replace('<|MASK|>', '').replace('<|endoftext|>', '')
+    print('-'*100)
+    print('Fast generation v1: (time: {:.4f} seconds; num of forward passes: {}; avg step forward time: {:.4f} seconds)'.format(end_time - start_time, forward_counter.counter.count, (end_time - start_time) / forward_counter.counter.count))
     print(cleaned_text)
