@@ -12,7 +12,7 @@ model_base: "trado"
 
 # dataset you want to eval on, you need to download first, you can also modify your own dataset, see instructions in ./data
 dataset:
-    eval_dataset: "AIME2024" #"MBPP""MATH500""GSM8K""AIME2024""GPQA""LiveCodeBench""HumanEval""LiveBench"
+    eval_dataset: "MATH500" #"MBPP""MATH500""GSM8K""AIME2024""GPQA""LiveCodeBench""HumanEval""LiveBench"
     data_type: "math" #"code""math"
 
 execute:
@@ -23,15 +23,16 @@ rollout:
     max_active: 32
     num_response_per_task: 3
     temperature: 1.0
-    max_token: 256 # max generation token num; 2048 for AIME2024 by default
+    max_token: 2048 # max generation token num; 2048 for AIME2024 by default
     block_size: 4 # 4, 8, 16, 32
     denoising_steps_per_block: 4 # 4, 8, 16, 32
-    draft_steps: 8 # 1, 2, 4, 8
+    draft_steps: 1 # 1, 2, 4, 8
     top_p: 1.0
-    top_k: 0
+    top_k: 1
     remasking_strategy: "low_confidence_static" #"low_confidence_static""low_confidence_dynamic"
     dynamic_threshold: 0.9
     start_with_think: False # if not reasoning model, set to False, otherwise True
     output_unmasking_history: True
+    fast_sampling_version: "v0" # "v1" or "v0"
 
 

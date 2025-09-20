@@ -121,7 +121,7 @@ def _sample(
     
     output_history = generation_config.output_history
     return_dict_in_generate = generation_config.return_dict_in_generate
-    max_length = generation_config.max_length
+    max_length = generation_config.max_gen_length
     steps = generation_config.steps
     temperature = generation_config.temperature
     top_p = generation_config.top_p

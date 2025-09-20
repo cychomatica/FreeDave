@@ -1,15 +1,17 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from trado_generate import block_diffusion_generate, block_diffusion_generate_fast, block_diffusion_generate_fast_v1
+from trado_generate import block_diffusion_generate, block_diffusion_generate_FreeDave, block_diffusion_generate_FreeDave_v1
 from monitor_utils import ForwardHookCounter
 import time
 
-model_name = "Gen-Verse/TraDo-4B-Instruct"
+# model_name = "Gen-Verse/TraDo-4B-Instruct"
+model_name = "JetLM/SDAR-4B-Chat"
 
 model = AutoModelForCausalLM.from_pretrained(
     model_name, trust_remote_code=True, torch_dtype="float16", device_map="cuda"
 )
 tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
 forward_counter = ForwardHookCounter(model)
+model.eval()
 
 # prompt = "What's the solution of x^2 - 2x + 1 = 0\nPlease reason step by step, and put your final answer within \\boxed{}.\n"
 # prompt = 'Who is Terrence Tao? Why is he famous?'
@@ -45,7 +47,7 @@ while True:
     forward_counter.reset_count()
     start_time = time.time()
     with forward_counter.count_context():
-        output_ids = block_diffusion_generate_fast(
+        output_ids = block_diffusion_generate_FreeDave(
             model,
             prompt=tokens,
             mask_id=151669,
@@ -66,12 +68,12 @@ while True:
     forward_counter.reset_count()
     start_time = time.time()
     with forward_counter.count_context():
-        output_ids = block_diffusion_generate_fast_v1(
+        output_ids = block_diffusion_generate_FreeDave_v1(
             model,
             prompt=tokens,
             mask_id=151669,
             gen_length=256,
-            block_length=4, denoising_steps=4, draft_steps=8,
+            block_length=4, denoising_steps=4, draft_steps=16,
             temperature=1.0, top_k=1, top_p=1.0,
             remasking_strategy="low_confidence_static",
             confidence_threshold=0.9

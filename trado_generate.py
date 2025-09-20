@@ -194,7 +194,7 @@ def block_diffusion_generate(
     return x
 
 @torch.no_grad()
-def block_diffusion_generate_fast(
+def block_diffusion_generate_FreeDave(
         model,
         prompt,
         mask_id,
@@ -318,7 +318,7 @@ def block_diffusion_generate_fast(
     return x
 
 @torch.no_grad()
-def block_diffusion_generate_fast_v1(
+def block_diffusion_generate_FreeDave_v1(
         model,
         prompt,
         mask_id,
@@ -347,8 +347,6 @@ def block_diffusion_generate_fast_v1(
         num_blocks, num_blocks, device=model.device))
     block_diffusion_attention_mask = block_mask.repeat_interleave(block_length, dim=0)\
                                                .repeat_interleave(block_length, dim=1).unsqueeze(0)
-    # block_priority_shift = torch.cat([torch.zeros(prompt.shape[1], device=x.device), 
-                                    # torch.arange(num_blocks-1, -1, -1, device=x.device).repeat_interleave(block_length)])
 
     position_ids = torch.arange(total_length, device=model.device).unsqueeze(0)
 
@@ -380,10 +378,11 @@ def block_diffusion_generate_fast_v1(
     # Decode stage
     # gen_blocks = 0
     # while gen_blocks < num_blocks - prefill_blocks:
-    for gen_blocks in range(num_blocks - prefill_blocks):
+    # for num_block in range(num_blocks - prefill_blocks):
+    for num_block in range(prefill_blocks, num_blocks):
 
         # NOTE: assume block_length == denoising_steps for now
-        cur_num_draft_blocks = min(math.ceil(draft_steps / denoising_steps), num_blocks - prefill_blocks - 1 - gen_blocks)
+        cur_num_draft_blocks = min(math.ceil(draft_steps / denoising_steps), num_blocks - num_block - 1)
         cur_num_transfer_tokens = num_transfer_tokens.repeat(cur_num_draft_blocks+1)
 
         cur_x = x[:, prefill_length:prefill_length + (cur_num_draft_blocks+1) * block_length].clone()
@@ -405,7 +404,7 @@ def block_diffusion_generate_fast_v1(
                     break
                 
                 # Draft token filling from last forward pass
-                if gen_blocks < num_blocks - prefill_blocks - 1:
+                if num_block < num_blocks - 1:
                     cur_draft_steps = min(draft_steps, denoising_steps * cur_num_draft_blocks)
                 else:
                     cur_draft_steps = min(draft_steps, denoising_steps - step)
@@ -456,7 +455,6 @@ def block_diffusion_generate_fast_v1(
         # Fill current block; update prefill_length and num_block
         x[:, prefill_length:prefill_length + (cur_num_draft_blocks+1) * block_length] = cur_x
         prefill_length += block_length
-        # gen_blocks += 1
 
         if stopping_criteria_idx is not None and any(stop_idx in x[:, prompt_length:] for stop_idx in stopping_criteria_idx):
             break

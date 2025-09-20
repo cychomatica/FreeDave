@@ -1,38 +1,38 @@
-# coding=utf-8
-# Copyright 2024 The Dream team, HKUNLP Group and the HuggingFace Inc. team. All rights reserved.
-#
-# Licensed under the Apache License, Version 2.0 (the "License");
-# you may not use this file except in compliance with the License.
-# You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
-
-import warnings
-import copy
+from __future__ import annotations
+import math, json, os, time
 from dataclasses import dataclass
-from typing import Any, Dict, Optional, Tuple, Union
-
+from typing import List, Tuple
+import numpy as np
+from jinja2 import Template
 import torch
+from termcolor import cprint
+import torch.nn.functional as F
+import transformers
+from transformers import AutoTokenizer, AutoModel
+import multiprocessing as mp
+
+
+from sample.dream import DreamTokenizer
+from sample.dream.modeling_dream import DreamModel
+from sample.dream.generation_utils_block import DreamGenerationMixin
+import types
+from sample.dream.generation_utils_block import DreamGenerationConfig
+
+
+from transformers.utils import ModelOutput
+from typing import Any, Dict, Optional, Tuple, Union
 import torch.distributions as dists
+from dataclasses import dataclass
 from torch.nn import functional as F
-from transformers import __version__
-from transformers.generation.configuration_utils import (
-    GenerationConfig
-)
-from transformers.utils import (
-    ModelOutput,
-    is_torchdynamo_compiling,
-    logging,
-)
+import torch
 
-logger = logging.get_logger(__name__)
 
+from omegaconf import DictConfig, ListConfig, OmegaConf
+def get_config():
+    cli_conf = OmegaConf.from_cli()
+    yaml_conf = OmegaConf.load(cli_conf.config)
+    conf = OmegaConf.merge(yaml_conf, cli_conf)
+    return conf
 
 def top_p_logits(logits, top_p=None):
     sorted_logits, sorted_indices = torch.sort(logits, descending=True)
@@ -55,7 +55,9 @@ def top_k_logits(logits, top_k=None):
     return logits
 
 
-def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, margin_confidence=False, neg_entropy=False):
+def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, tar=None):
+
+    logits = logits.float()
 
     if temperature > 0:
         logits = logits / temperature
@@ -63,31 +65,34 @@ def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, margin_confid
         logits = top_p_logits(logits, top_p)
     if top_k is not None:
         logits = top_k_logits(logits, top_k)
-    probs = torch.softmax(logits, dim=-1)
+    
+    dist = dists.Categorical(logits=logits)
+    x0 = dist.sample()
+    probs = dist.probs
 
     if temperature > 0:
-        try:
-            x0 = dists.Categorical(probs=probs).sample()
-            confidence = torch.gather(probs, -1, x0.unsqueeze(-1)).squeeze(-1)
-        except:
-            confidence, x0 = probs.max(dim=-1)
+        target = probs.gather(-1, x0.unsqueeze(-1)).squeeze(-1)
     else:
-        confidence, x0 = probs.max(dim=-1)
+        target, x0 = probs.max(dim=-1)
     
-    if margin_confidence:
+    if tar == "confidence":
+        return target, x0
+    
+    if tar == "margin_confidence":
         sorted_probs, _ = torch.sort(probs, dim=-1, descending=True)
         # Extract top1 and top2 probabilities
-        top1_probs = sorted_probs[:, 0] 
-        top2_probs = sorted_probs[:, 1] 
+        top1_probs = sorted_probs[:, 0]
+        
+        top2_probs = sorted_probs[:, 1]
         # Calculate confidence as top1 - top2
-        confidence = top1_probs - top2_probs 
+        target = top1_probs - top2_probs 
     
-    if neg_entropy:
+    if tar == "neg_entropy":
         epsilon = 1e-10
         log_probs = torch.log(probs + epsilon)
-        confidence = torch.sum(probs * log_probs, dim=-1)
+        target = torch.sum(probs * log_probs, dim=-1)
     
-    return confidence, x0
+    return target, x0
 
 
 @dataclass
@@ -96,370 +101,1130 @@ class DreamModelOutput(ModelOutput):
     history: Optional[Tuple[torch.FloatTensor]] = None
 
 
-class DreamGenerationConfig(GenerationConfig):
-    def __init__(self, **kwargs):
-        self.temperature: float = kwargs.pop("temperature", 0.0)
-        self.top_p: Optional[float] = kwargs.pop("top_p", None)
-        self.top_k: Optional[int] = kwargs.pop("top_k", None)
-        self.max_length = kwargs.pop("max_length", 20)
-        self.max_new_tokens = kwargs.pop("max_new_tokens", None)
-        # diffusion specific params
-        self.eps: float = kwargs.pop("eps", 1e-3)
-        self.steps: int = kwargs.pop("steps", 512)
-        self.alg: str = kwargs.pop("alg", 'origin')
-        self.alg_temp: Optional[float] = kwargs.pop("alg_temp", None)
+@torch.no_grad()
+def block_diffusion_generate(
+    model,
+    input_ids: torch.LongTensor,
+    attention_mask: Optional[torch.LongTensor],
+    generation_config: DreamGenerationConfig,
+    block_length: Optional[int] = 32,
+    use_cache: bool = False,
+    further_horizon: int = 128,
+    mask_token_id: int = 151666,
+    eos_token_id: int = 151645,
+    pad_token_id: int = 151643,
+    pad_target_penalty: float = 1.0,
+    unmask_threshold: Optional[float] = 0.9
+) -> Union[DreamModelOutput, torch.LongTensor]:
+    # init values
+    
+    output_history = generation_config.output_history
+    return_dict_in_generate = generation_config.return_dict_in_generate
+    max_length = generation_config.max_gen_length
+    steps = generation_config.steps
+    temperature = generation_config.temperature
+    top_p = generation_config.top_p
+    top_k = generation_config.top_k
+    tar = generation_config.tar
+    alg_temp = generation_config.alg_temp
+    cgws = further_horizon
 
-        # Parameters that define the output variables of `generate`
-        self.num_return_sequences: int = kwargs.pop("num_return_sequences", 1)
-        self.return_dict_in_generate: bool = kwargs.pop("return_dict_in_generate", False)
-        self.output_history: bool = kwargs.pop("output_history", False)
 
-        # Special tokens that can be used at generation time
-        self.mask_token_id = kwargs.pop("mask_token_id", None)
-        self.pad_token_id = kwargs.pop("pad_token_id", None)
-        self.bos_token_id = kwargs.pop("bos_token_id", None)
-        self.eos_token_id = kwargs.pop("eos_token_id", None)
+    histories = [] if (return_dict_in_generate and output_history) else None
 
-        # Wild card
-        self.generation_kwargs = kwargs.pop("generation_kwargs", {})
+    # pad input_ids to max_length
+    x = F.pad(input_ids, (0, max_length - input_ids.shape[1]), value=mask_token_id)
+    gen_length = max_length - input_ids.shape[1]
+    
+    # Handle block configuration
+    if block_length is None:
+        block_length = gen_length  # Default: single block (original behavior)
+    
+    assert gen_length % block_length == 0, f"gen_length ({gen_length}) must be divisible by block_length ({block_length})"
+    num_blocks = gen_length // block_length
+    
+    base, rem = divmod(steps, num_blocks)
+    steps_per_block = [base + (1 if i < rem else 0) for i in range(num_blocks)]
+    timesteps = [
+        torch.linspace(1, generation_config.eps, spb + 1, device=x.device)
+        for spb in steps_per_block
+    ]
 
-        # The remaining attributes do not parametrize `.generate()`, but are informative and/or used by the hub
-        # interface.
-        self._from_model_config = kwargs.pop("_from_model_config", False)
-        self._commit_hash = kwargs.pop("_commit_hash", None)
-        self.transformers_version = kwargs.pop("transformers_version", __version__)
-
-        # Additional attributes without default values
-        if not self._from_model_config:
-            # we don't want to copy values from the model config if we're initializing a `GenerationConfig` from a
-            # model's default configuration file
-            for key, value in kwargs.items():
-                try:
-                    setattr(self, key, value)
-                except AttributeError as err:
-                    logger.error(f"Can't set {key} with value {value} for {self}")
-                    raise err
-
-        # Validate the values of the attributes
-        self.validate(is_init=True)
-
-    #def validate(self, is_init=False):
-    #    pass
-    def validate(self, is_init = False, strict: bool = True):
-        pass
-
-class DreamGenerationMixin:
-    @staticmethod
-    def _expand_inputs_for_generation(
-        expand_size: int = 1,
-        input_ids: Optional[torch.LongTensor] = None,
-        attention_mask: Optional[torch.LongTensor] = None
-    ) -> Tuple[torch.LongTensor, Dict[str, Any]]:
-        """Expands tensors from [batch_size, ...] to [batch_size * expand_size, ...]"""
-        # Do not call torch.repeat_interleave if expand_size is 1 because it clones
-        # the input tensor and thus requires more memory although no change is applied
-        if expand_size == 1:
-            return input_ids, attention_mask
-        if input_ids is not None:
-            input_ids = input_ids.repeat_interleave(expand_size, dim=0)
-        if attention_mask is not None:
-            attention_mask = attention_mask.repeat_interleave(expand_size, dim=0)
-        return input_ids, attention_mask
-
-    def _validate_generated_length(self, generation_config, input_ids_length, has_default_max_length):
-        """Performs validation related to the resulting generated length"""
-
-        # Can't throw warnings/exceptions during compilation
-        if is_torchdynamo_compiling():
-            return
-
-        # 1. Max length warnings related to poor parameterization
-        if has_default_max_length and generation_config.max_new_tokens is None and generation_config.max_length == 20:
-            # 20 is the default max_length of the generation config
-            warnings.warn(
-                f"Using the model-agnostic default `max_length` (={generation_config.max_length}) to control the "
-                "generation length. We recommend setting `max_new_tokens` to control the maximum length of the "
-                "generation.",
-                UserWarning,
-            )
-        if input_ids_length >= generation_config.max_length:
-            input_ids_string = "input_ids"
-            raise ValueError(
-                f"Input length of {input_ids_string} is {input_ids_length}, but `max_length` is set to"
-                f" {generation_config.max_length}. This can lead to unexpected behavior. You should consider"
-                " increasing `max_length` or, better yet, setting `max_new_tokens`."
-            )
-
-    def _prepare_generated_length(
-        self,
-        generation_config,
-        has_default_max_length,
-        input_ids_length,
-    ):
-        """Prepared max and min length in generation configs to avoid clashes between similar attributes"""
-
-        if generation_config.max_new_tokens is not None:
-            if not has_default_max_length and generation_config.max_length is not None:
-                logger.warning(
-                    f"Both `max_new_tokens` (={generation_config.max_new_tokens}) and `max_length`(="
-                    f"{generation_config.max_length}) seem to have been set. `max_new_tokens` will take precedence. "
-                    "Please refer to the documentation for more information. "
-                    "(https://huggingface.co/docs/transformers/main/en/main_classes/text_generation)"
-                )
-            generation_config.max_length = generation_config.max_new_tokens + input_ids_length
-
-        elif has_default_max_length:
-            if generation_config.max_length == DreamGenerationConfig().max_length:
-                generation_config.max_length = generation_config.max_length + input_ids_length
-                max_position_embeddings = getattr(self.config, "max_position_embeddings", None)
-                if max_position_embeddings is not None:
-                    generation_config.max_length = min(generation_config.max_length, max_position_embeddings)
-
-        return generation_config
-
-    def _prepare_generation_config(
-        self, generation_config: Optional[DreamGenerationConfig], **kwargs: Dict
-    ) -> DreamGenerationConfig:
-        """
-        Prepares the base generation config, then applies any generation configuration options from kwargs. This
-        function handles retrocompatibility with respect to configuration files.
-        """
-        # priority: `generation_config` argument > `model.generation_config` (the default generation config)
-        using_model_generation_config = False
-        if generation_config is None:
-            generation_config = DreamGenerationConfig.from_model_config(self.config)
-            using_model_generation_config = True
-
-        # `torch.compile` can't compile `copy.deepcopy`, arguments in `kwargs` that are part of `generation_config`
-        # will mutate the object with `.update`. As such, passing these arguments through `kwargs` is disabled -- an
-        # exception will be raised in `_validate_model_kwargs`
-        if not is_torchdynamo_compiling():
-            generation_config = copy.deepcopy(generation_config)
-            _kwargs = generation_config.update(**kwargs)
-            # If `generation_config` is provided, let's fallback ALL special tokens to the default values for the model
-            if not using_model_generation_config:
-                if generation_config.bos_token_id is None:
-                    generation_config.bos_token_id = self.generation_config.bos_token_id
-                if generation_config.eos_token_id is None:
-                    generation_config.eos_token_id = self.generation_config.eos_token_id
-                if generation_config.pad_token_id is None:
-                    generation_config.pad_token_id = self.generation_config.pad_token_id
-                if generation_config.mask_token_id is None:
-                    generation_config.mask_token_id = self.generation_config.mask_token_id
-
-        return generation_config
-
-    def _prepare_special_tokens(
-        self,
-        generation_config: DreamGenerationConfig,
-        device: Optional[Union[torch.device, str]] = None,
-    ):
-        """
-        Prepares the special tokens for generation, overwriting the generation config with their processed versions
-        converted to tensor.
-        Note that `generation_config` is changed in place and stops being serializable after this method is called.
-        That is no problem if called within `generate` (`generation_config` is a local copy that doesn't leave the
-        function). However, if called outside `generate`, consider creating a copy of `generation_config` first.
-        """
-
-        # Convert special tokens to tensors
-        def _tensor_or_none(token, device=None):
-            if token is None:
-                return token
-
-            device = device if device is not None else self.device
-            if isinstance(token, torch.Tensor):
-                return token.to(device)
-            return torch.tensor(token, device=device, dtype=torch.long)
-
-        bos_token_tensor = _tensor_or_none(generation_config.bos_token_id, device=device)
-        eos_token_tensor = _tensor_or_none(generation_config.eos_token_id, device=device)
-        pad_token_tensor = _tensor_or_none(generation_config.pad_token_id, device=device)
-        mask_token_tensor = _tensor_or_none(generation_config.mask_token_id, device=device)
-
-        # We can have more than one eos token. Always treat it as a 1D tensor (when it exists).
-        if eos_token_tensor is not None and eos_token_tensor.ndim == 0:
-            eos_token_tensor = eos_token_tensor.unsqueeze(0)
-
-        # Set pad token if unset (and there are conditions to do so)
-        if pad_token_tensor is None and eos_token_tensor is not None:
-            pad_token_tensor = eos_token_tensor[0]
-            logger.warning(f"Setting `pad_token_id` to `eos_token_id`:{pad_token_tensor} for open-end generation.")
-
-        # Update generation config with the updated special tokens tensors
-        # NOTE: this must be written into a different attribute name than the one holding the original special tokens
-        # (in their non-tensor form), in order to enable end-to-end compilation. See
-        # https://pytorch.org/docs/stable/torch.compiler_cudagraph_trees.html#limitations
-        generation_config._bos_token_tensor = bos_token_tensor
-        generation_config._eos_token_tensor = eos_token_tensor
-        generation_config._pad_token_tensor = pad_token_tensor
-        generation_config._mask_token_tensor = mask_token_tensor
-
-    @torch.no_grad()
-    def diffusion_generate(
-        self,
-        inputs: Optional[torch.Tensor] = None,
-        generation_config: Optional[DreamGenerationConfig] = None,
-        **kwargs,
-    ) -> Union[DreamModelOutput, torch.LongTensor]:
-        # 1. Handle `generation_config` and kwargs that might update it, and validate the `.generate()` call
-        generation_config = self._prepare_generation_config(generation_config, **kwargs)
-        generation_tokens_hook_func = kwargs.pop("generation_tokens_hook_func", lambda step, x, logits: x)
-        generation_logits_hook_func = kwargs.pop("generation_logits_hook_func", lambda step, x, logits: logits)
-
-        # 2. Define model inputs
-        assert inputs is not None
-        input_ids = inputs
-        device = input_ids.device
-        attention_mask = kwargs.pop("attention_mask", None)
-        self._prepare_special_tokens(generation_config, device=device)
-
-        # 3. Prepare `max_length`.
-        input_ids_length = input_ids.shape[-1]
-        has_default_max_length = kwargs.get("max_length") is None and generation_config.max_length is not None
-        generation_config = self._prepare_generated_length(
-            generation_config=generation_config,
-            has_default_max_length=has_default_max_length,
-            input_ids_length=input_ids_length,
+    if attention_mask is not None and torch.any(attention_mask == 0.0):
+        # we do not mask the [MASK] tokens so value = 1.0
+        attention_mask = F.pad(attention_mask, (0, max_length - attention_mask.shape[1]), value=1.0)
+        tok_idx = attention_mask.long().cumsum(-1) - 1
+        tok_idx.masked_fill_(attention_mask == 0, 1)
+        # attention_mask is of shape [B, N]
+        # broadcast to [B, 1, N, N]
+        attention_mask = torch.logical_and(
+            attention_mask.unsqueeze(1).unsqueeze(-2),
+            attention_mask.unsqueeze(1).unsqueeze(-1),
         )
+        attention_mask = torch.where(attention_mask, torch.tensor(0.0, device=attention_mask.device), torch.tensor(float("-inf"), device=attention_mask.device))
+    else:
+        tok_idx = None
+        attention_mask = "full"
+    
 
-        self._validate_generated_length(generation_config, input_ids_length, has_default_max_length)
+
+    # Initialize cache for the prompt
+    past_key_values = None
+
+    # Process each block
+    for num_block in range(num_blocks):
         
-        # 4. Check input_ids
-        if not is_torchdynamo_compiling() and self.device.type != input_ids.device.type:
-            warnings.warn(
-                "You are calling .generate() with the `input_ids` being on a device type different"
-                f" than your model's device. `input_ids` is on {input_ids.device.type}, whereas the model"
-                f" is on {self.device.type}. You may experience unexpected behaviors or slower generation."
-                " Please make sure that you have put `input_ids` to the"
-                f" correct device by calling for example input_ids = input_ids.to('{self.device.type}') before"
-                " running `.generate()`.",
-                UserWarning,
-            )
-        if (
-            hasattr(generation_config, "pad_token_id") and
-            torch.any(input_ids == generation_config.pad_token_id) and 
-            attention_mask is None
-        ):
-            warnings.warn(
-                "Padding was detected but no attention mask is passed here. For correct "
-                "generation results, please set `attention_mask` when batch-padding inputs.",
-                UserWarning,
-            )
+        current_block_start = input_ids.shape[1] + num_block * block_length
+        current_block_end = current_block_start + block_length
 
-        input_ids, attention_mask = self._expand_inputs_for_generation(
-            expand_size=generation_config.num_return_sequences,
-            input_ids=input_ids,
-            attention_mask=attention_mask 
-        )
+        if cgws is not None:
+            window_end  = max_length if cgws is None else min(current_block_end + cgws, max_length)
+            window_slice = slice(current_block_start, window_end)
 
-        result = self._sample(
-            input_ids,
-            attention_mask=attention_mask,
-            generation_config=generation_config,
-            generation_tokens_hook_func=generation_tokens_hook_func,
-            generation_logits_hook_func=generation_logits_hook_func
-        )
-        return result
+        # update cache
+        if use_cache:
+            model_output = model(x, attention_mask, tok_idx, use_cache=True)
+            past_key_values = model_output.past_key_values
+            # Extract only previous block cache
+            new_past_key_values = []
+            for i in range(len(past_key_values)):
+                new_past_key_values.append(())
+                for j in range(len(past_key_values[i])):
+                    new_past_key_values[i] += (past_key_values[i][j][:, :current_block_start, :],)
+            past_key_values = new_past_key_values
 
-    def _sample(
-        self,
-        input_ids: torch.LongTensor,
-        attention_mask: Optional[torch.LongTensor],
-        generation_config: DreamGenerationConfig,
-        generation_tokens_hook_func,
-        generation_logits_hook_func
-    ) -> Union[DreamModelOutput, torch.LongTensor]:
-        # init values
-        output_history = generation_config.output_history
-        return_dict_in_generate = generation_config.return_dict_in_generate
-        max_length = generation_config.max_length
-        mask_token_id = generation_config.mask_token_id
-        steps = generation_config.steps
-        eps = generation_config.eps
-        alg = generation_config.alg
-        alg_temp = generation_config.alg_temp
-        temperature = generation_config.temperature
-        top_p = generation_config.top_p
-        top_k = generation_config.top_k
-
-        histories = [] if (return_dict_in_generate and output_history) else None
-
-        # pad input_ids to max_length
-        x = F.pad(input_ids, (0, max_length - input_ids.shape[1]), value=mask_token_id)
-
-        if attention_mask is not None and torch.any(attention_mask == 0.0):
-            # we do not mask the [MASK] tokens so value = 1.0
-            attention_mask = F.pad(attention_mask, (0, max_length - attention_mask.shape[1]), value=1.0)
-            tok_idx = attention_mask.long().cumsum(-1) - 1
-            tok_idx.masked_fill_(attention_mask == 0, 1)
-            # attention_mask is of shape [B, N]
-            # broadcast to [B, 1, N, N]
-            attention_mask = torch.logical_and(
-                attention_mask.unsqueeze(1).unsqueeze(-2),
-                attention_mask.unsqueeze(1).unsqueeze(-1),
-            )
         else:
-            tok_idx = None
-            attention_mask = "full"
-
-        timesteps = torch.linspace(1, eps, steps + 1, device=x.device)
-
-        # this allows user-defined token control of the intermediate steps
-        x = generation_tokens_hook_func(None, x, None)
-        for i in range(steps):
-            mask_index = (x == mask_token_id)
-            logits = self(x, attention_mask, tok_idx).logits
-            logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
-
-            # this allows user-defined logits control of the intermediate steps
-            logits = generation_logits_hook_func(i, x, logits)
-
-            mask_logits = logits[mask_index]
-            t = timesteps[i]
-            s = timesteps[i + 1]
+            model_output = model(x, attention_mask, tok_idx, use_cache=False)
         
-            if alg == 'origin':
-                p_transfer = 1 - s / t if i < steps - 1 else 1
-                x0 = torch.zeros_like(x[mask_index], device=self.device, dtype=torch.long) + mask_token_id
-                transfer_index_t_s = torch.rand(*x0.shape, device=self.device) < p_transfer
-                _, x0[transfer_index_t_s]= sample_tokens(mask_logits[transfer_index_t_s], temperature=temperature, top_p=top_p, top_k=top_k)
-                x[mask_index] = x0.clone()
+        logits = model_output.logits
+        logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
+        _, x0 = sample_tokens(logits, temperature=temperature, top_p=top_p, top_k=top_k)
+        x[:, current_block_start] = x0[:, current_block_start]
+        if histories is not None:
+            histories.append(x.clone().cpu())
+        
+        
+        spb = steps_per_block[num_block]
+        i = 1
+        while True:
+            
+            
+            if cgws is not None:
+                mask_index = (x[:, window_slice] == mask_token_id)
             else:
-                if alg == 'maskgit_plus':
-                    confidence, x0 = sample_tokens(mask_logits, temperature=temperature, top_p=top_p, top_k=top_k)
-                elif alg == 'topk_margin':
-                    confidence, x0 = sample_tokens(mask_logits, temperature=temperature, top_p=top_p, top_k=top_k, margin_confidence=True)
-                elif alg == 'entropy':
-                    confidence, x0 = sample_tokens(mask_logits, temperature, top_p=top_p, top_k=top_k, neg_entropy=True)
+                mask_index = (x[:, current_block_start:] == mask_token_id)
+            
+            
+            # Prepare attention mask for cached generation
+            if attention_mask != "full":
+                # Adjust attention mask for current position
+                if cgws is not None:
+                    current_attention_mask = attention_mask[:, :, window_slice, :window_end]
                 else:
-                    raise RuntimeError(f"Unknown alg: {alg}")
+                    current_attention_mask = attention_mask[:, :, current_block_start:, :]
+            else:
+                current_attention_mask = attention_mask
+            
+            if use_cache:
+                if cgws is not None:
+                    model_output = model(x[:, window_slice], current_attention_mask, 
+                                    tok_idx[:, window_slice] if tok_idx is not None else None, 
+                                    past_key_values=past_key_values, use_cache=True)
+                else:
+                    model_output = model(x[:, current_block_start:], current_attention_mask,
+                                    tok_idx[:, current_block_start:] if tok_idx is not None else None, 
+                                    past_key_values=past_key_values, use_cache=True)
+                logits = model_output.logits
+                logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
+            else:
+                model_output = model(x, attention_mask, tok_idx, use_cache=False)
+                logits = model_output.logits
+                logits = logits[:, current_block_start:]
+                logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
+            
+            if (x[:, current_block_start:current_block_end] == mask_token_id).sum() == 0:
+                break
+            
+            
+            mask_index[:, block_length:] = False
+            mask_logits = logits[mask_index]
+            target, x0 = sample_tokens(mask_logits, temperature, top_p=top_p, top_k=top_k, tar=tar)
+
+            # —— pad token penalty ——
+            _pad_target_divisor = pad_target_penalty
+            _pad_mask_flat = (x0 == pad_token_id)  
+            if _pad_mask_flat.any():
+                target = target.clone()
+                target[_pad_mask_flat] = target[_pad_mask_flat] / _pad_target_divisor
+
+            if cgws is not None:
+                full_target = torch.full_like(x[:, window_slice], -torch.inf, device=model.device, dtype=logits.dtype)
+            else:
+                full_target = torch.full_like(x[:, current_block_start:], -torch.inf, device=model.device, dtype=logits.dtype)
+            full_target = full_target.float()
+            full_target[mask_index] = target
+            full_target[:, block_length:] = -torch.inf
+
+            if unmask_threshold is None:
+
                 num_mask_token = mask_index.sum() / mask_index.shape[0]
-                number_transfer_tokens = int(num_mask_token * (1 - s / t)) if i < steps - 1 else int(num_mask_token)
-                full_confidence = torch.full_like(x, -torch.inf, device=self.device, dtype=logits.dtype)
-                full_confidence[mask_index] = confidence
+                t = timesteps[num_block][i]
+                s = timesteps[num_block][i + 1]
+                number_transfer_tokens = int(num_mask_token * (1 - s / t)) if i < spb - 1 else int(num_mask_token)
+                
                 if number_transfer_tokens > 0:
                     if alg_temp is None or alg_temp == 0:
-                        _, transfer_index = torch.topk(full_confidence, number_transfer_tokens)
+                        _, transfer_index = torch.topk(full_target, number_transfer_tokens)
                     else:
-                        full_confidence = full_confidence / alg_temp
-                        full_confidence = F.softmax(full_confidence, dim=-1)
-                        transfer_index = torch.multinomial(full_confidence, num_samples=number_transfer_tokens)
-                    x_ = torch.zeros_like(x, device=self.device, dtype=torch.long) + mask_token_id
+                        full_target = full_target / alg_temp
+                        full_target = F.softmax(full_target, dim=-1)
+                        transfer_index = torch.multinomial(full_target, num_samples=number_transfer_tokens)
+                    
+                    if cgws is not None:
+                        x_ = torch.zeros_like(x[:, window_slice], device=model.device, dtype=torch.long) + mask_token_id
+                    else:
+                        x_ = torch.zeros_like(x[:, current_block_start:], device=model.device, dtype=torch.long) + mask_token_id
                     x_[mask_index] = x0.clone()
-                    row_indices = torch.arange(x.size(0), device=self.device).unsqueeze(1).expand_as(transfer_index)
-                    x[row_indices,transfer_index] = x_[row_indices,transfer_index]
+                    row_indices = torch.arange(x.size(0), device=model.device).unsqueeze(1).expand_as(transfer_index)
 
-            # this allows user-defined token control of the intermediate steps
-            x = generation_tokens_hook_func(i, x, logits)
+                    
+                    
+                    if cgws is not None:
+                        x[:, window_slice][row_indices,transfer_index] = x_[row_indices,transfer_index]
+                    else:
+                        x[:, current_block_start:][row_indices,transfer_index] = x_[row_indices,transfer_index]
+                    
+                
+                    
+            else:
+                if cgws is not None:
+                    xwin = x[:, window_slice]
+                else:
+                    xwin = x[:, current_block_start:]
+                
+                selected_map = torch.zeros_like(xwin, dtype=torch.bool)
+                selected_map[mask_index] = (target >= unmask_threshold)
+                no_sel = ~selected_map.any(dim=-1)  # [B]
+                no_sel = no_sel & mask_index.any(dim=-1)
+
+                if no_sel.any():
+                    masked_scores = full_target.masked_fill(~mask_index, float("-inf"))
+                    best_idx = torch.argmax(masked_scores, dim=-1)
+                    selected_rows = torch.nonzero(no_sel, as_tuple=False).squeeze(-1)
+                    selected_map[selected_rows, best_idx[selected_rows]] = True
+
+                selected_map &= mask_index
+                x_candidates = torch.full_like(xwin, mask_token_id, dtype=torch.long)
+                x_candidates[mask_index] = x0
+
+                xwin[selected_map] = x_candidates[selected_map]
+
+                
+            
+            if histories is not None:
+                histories.append(x.clone().cpu())
+
+            i += 1
+
+            if (x[:, current_block_start:current_block_end] == mask_token_id).sum() == 0:
+                break
+        
+        # block_all_pad = torch.all(
+        #     x[:, current_block_start:current_block_end] == pad_token_id
+        # )
+        # if block_all_pad:
+        #     if current_block_end < x.size(1):
+        #         x[:, current_block_end:] = pad_token_id
+        #     if histories is not None:
+        #         histories.append(x.clone().cpu())
+        #     break
+
+    
+    if return_dict_in_generate:
+        return DreamModelOutput(
+            sequences=x,
+            history=histories,
+        )
+    else:
+        return x
+
+
+@torch.no_grad()
+def block_diffusion_generate_(
+    model,
+    input_ids: torch.LongTensor,
+    attention_mask: Optional[torch.LongTensor],
+    generation_config: DreamGenerationConfig,
+    block_length: Optional[int] = 32,
+    use_cache: bool = False,
+    further_horizon: int = 128,
+    mask_token_id: int = 151666,
+    eos_token_id: int = 151645,
+    pad_token_id: int = 151643,
+    pad_target_penalty: float = 1.0,
+    unmask_threshold: Optional[float] = 0.9
+) -> Union[DreamModelOutput, torch.LongTensor]:
+    # init values
+    
+    output_history = generation_config.output_history
+    return_dict_in_generate = generation_config.return_dict_in_generate
+    max_length = generation_config.max_gen_length
+    steps = generation_config.steps
+    temperature = generation_config.temperature
+    top_p = generation_config.top_p
+    top_k = generation_config.top_k
+    tar = generation_config.tar
+    alg_temp = generation_config.alg_temp
+    cgws = further_horizon
+
+
+    histories = [] if (return_dict_in_generate and output_history) else None
+
+    # pad input_ids to max_length
+    x = F.pad(input_ids, (0, max_length - input_ids.shape[1]), value=mask_token_id)
+    gen_length = max_length - input_ids.shape[1]
+    
+    # Handle block configuration
+    if block_length is None:
+        block_length = gen_length  # Default: single block (original behavior)
+    
+    assert gen_length % block_length == 0, f"gen_length ({gen_length}) must be divisible by block_length ({block_length})"
+    num_blocks = gen_length // block_length
+    
+    base, rem = divmod(steps, num_blocks)
+    steps_per_block = [base + (1 if i < rem else 0) for i in range(num_blocks)]
+    timesteps = [
+        torch.linspace(1, generation_config.eps, spb + 1, device=x.device)
+        for spb in steps_per_block
+    ]
+
+    if attention_mask is not None and torch.any(attention_mask == 0.0):
+        # we do not mask the [MASK] tokens so value = 1.0
+        attention_mask = F.pad(attention_mask, (0, max_length - attention_mask.shape[1]), value=1.0)
+        tok_idx = attention_mask.long().cumsum(-1) - 1
+        tok_idx.masked_fill_(attention_mask == 0, 1)
+        # attention_mask is of shape [B, N]
+        # broadcast to [B, 1, N, N]
+        attention_mask = torch.logical_and(
+            attention_mask.unsqueeze(1).unsqueeze(-2),
+            attention_mask.unsqueeze(1).unsqueeze(-1),
+        )
+        attention_mask = torch.where(attention_mask, torch.tensor(0.0, device=attention_mask.device), torch.tensor(float("-inf"), device=attention_mask.device))
+    else:
+        tok_idx = None
+        attention_mask = "full"
+ 
+    # Initialize cache for the prompt
+    past_key_values = None
+
+    # Process each block
+    for num_block in range(num_blocks):
+        
+        current_block_start = input_ids.shape[1] + num_block * block_length
+        current_block_end = current_block_start + block_length
+
+        # update cache
+        if use_cache:
+            model_output = model(x, attention_mask, tok_idx, use_cache=True)
+            past_key_values = model_output.past_key_values
+            # Extract only previous block cache
+            new_past_key_values = []
+            for step in range(len(past_key_values)):
+                new_past_key_values.append(())
+                for j in range(len(past_key_values[step])):
+                    new_past_key_values[step] += (past_key_values[step][j][:, :current_block_start, :],)
+            past_key_values = new_past_key_values
+
+        else:
+            model_output = model(x, attention_mask, tok_idx, use_cache=False)
+        
+        logits = model_output.logits
+        logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
+        _, x0 = sample_tokens(logits, temperature=temperature, top_p=top_p, top_k=top_k)
+        x[:, current_block_start] = x0[:, current_block_start]
+        if histories is not None:
+            histories.append(x.clone().cpu())
+
+        if cgws is not None:
+            window_end  = max_length if cgws is None else min(current_block_end + cgws, max_length)
+            window_slice = slice(current_block_start, window_end)
+            cur_x = x[:, window_slice].clone()
+            cur_tok_idx = tok_idx[:, window_slice] if tok_idx is not None else None
+        else:
+            cur_x = x[:, current_block_start:].clone()
+            cur_tok_idx = tok_idx[:, current_block_start:] if tok_idx is not None else None
+        
+        # Prepare attention mask for cached generation
+        if attention_mask != "full":
+            # Adjust attention mask for current position
+            if cgws is not None:
+                current_attention_mask = attention_mask[:, :, window_slice, :window_end]
+            else:
+                current_attention_mask = attention_mask[:, :, current_block_start:, :]
+        else:
+            current_attention_mask = attention_mask
+
+        denoising_steps = steps_per_block[num_block]
+        step = 1
+        while True:
+            
+            
+            mask_index = (cur_x == mask_token_id)
+            mask_index[:, block_length:] = False
+
+            x0, x0_p = sample_step(
+                model, 
+                cur_x, 
+                current_block_start, current_attention_mask, cur_tok_idx, mask_index,
+                past_key_values, use_cache,
+                temperature, top_p, top_k, tar,
+            )
+            
+            if (cur_x[:, :block_length] == mask_token_id).sum() == 0:
+                break
+
+            cur_x = token_filling(
+                    cur_x, x0, x0_p,
+                    step, denoising_steps, 1, timesteps[num_block],
+                    pad_token_id, pad_target_penalty,
+                    mask_index, unmask_threshold,
+                    block_length,
+                    alg_temp,
+                )
+
+            if cgws is not None:
+                x[:, window_slice] = cur_x
+            else:
+                x[:, current_block_start:] = cur_x
+            
+            if histories is not None:
+                histories.append(x.clone().cpu())
+
+            step += 1
+
+            if (cur_x[:, :block_length] == mask_token_id).sum() == 0:
+                break
+        
+        # block_all_pad = torch.all(
+        #     x[:, current_block_start:current_block_end] == pad_token_id
+        # )
+        # if block_all_pad:
+        #     if current_block_end < x.size(1):
+        #         x[:, current_block_end:] = pad_token_id
+        #     if histories is not None:
+        #         histories.append(x.clone().cpu())
+        #     break
+
+    
+    if return_dict_in_generate:
+        return DreamModelOutput(
+            sequences=x,
+            history=histories,
+        )
+    else:
+        return x
+
+
+@torch.no_grad()
+def block_diffusion_generate_FreeDave(
+    model,
+    input_ids: torch.LongTensor,
+    attention_mask: Optional[torch.LongTensor],
+    generation_config: DreamGenerationConfig,
+    block_length: Optional[int] = 32,
+    use_cache: bool = False,
+    further_horizon: int = 128,
+    mask_token_id: int = 151666,
+    eos_token_id: int = 151645,
+    pad_token_id: int = 151643,
+    pad_target_penalty: float = 1.0,
+    unmask_threshold: Optional[float] = 0.9
+) -> Union[DreamModelOutput, torch.LongTensor]:
+    # init values
+    
+    output_history = generation_config.output_history
+    return_dict_in_generate = generation_config.return_dict_in_generate
+    gen_length = generation_config.max_gen_length
+    steps = generation_config.steps
+    draft_steps = generation_config.draft_steps
+    temperature = generation_config.temperature
+    top_p = generation_config.top_p
+    top_k = generation_config.top_k
+    tar = generation_config.tar
+    alg_temp = generation_config.alg_temp
+    cgws = further_horizon
+
+
+    histories = [] if (return_dict_in_generate and output_history) else None
+
+    # pad input_ids to max_length
+    x = F.pad(input_ids, (0, gen_length), value=mask_token_id)
+    max_length = gen_length + input_ids.shape[1]
+    
+    # Handle block configuration
+    if block_length is None:
+        block_length = gen_length  # Default: single block (original behavior)
+    
+    assert gen_length % block_length == 0, f"gen_length ({gen_length}) must be divisible by block_length ({block_length})"
+    num_blocks = gen_length // block_length
+    
+    base, rem = divmod(steps, num_blocks)
+    steps_per_block = [base + (1 if i < rem else 0) for i in range(num_blocks)]
+    timesteps = [
+        torch.linspace(1, generation_config.eps, spb + 1, device=x.device)
+        for spb in steps_per_block
+    ]
+
+    if attention_mask is not None and torch.any(attention_mask == 0.0):
+        # we do not mask the [MASK] tokens so value = 1.0
+        attention_mask = F.pad(attention_mask, (0, max_length - attention_mask.shape[1]), value=1.0)
+        tok_idx = attention_mask.long().cumsum(-1) - 1
+        tok_idx.masked_fill_(attention_mask == 0, 1)
+        # attention_mask is of shape [B, N]; broadcast to [B, 1, N, N]
+        attention_mask = torch.logical_and(
+            attention_mask.unsqueeze(1).unsqueeze(-2),
+            attention_mask.unsqueeze(1).unsqueeze(-1),
+        )
+        attention_mask = torch.where(attention_mask, torch.tensor(0.0, device=attention_mask.device), torch.tensor(float("-inf"), device=attention_mask.device))
+    else:
+        tok_idx = None
+        attention_mask = "full"
+
+    # # Initialize cache for the prompt
+    past_key_values = None
+
+    # Process each block
+    for num_block in range(num_blocks):
+        
+        current_block_start = input_ids.shape[1] + num_block * block_length
+        current_block_end = current_block_start + block_length
+
+        # update cache
+        if use_cache:
+            model_output = model(x, attention_mask, tok_idx, use_cache=True)
+            past_key_values = model_output.past_key_values
+            # Extract only previous block cache
+            new_past_key_values = []
+            for step in range(len(past_key_values)):
+                new_past_key_values.append(())
+                for j in range(len(past_key_values[step])):
+                    new_past_key_values[step] += (past_key_values[step][j][:, :current_block_start, :],)
+            past_key_values = new_past_key_values
+
+        else:
+            model_output = model(x, attention_mask, tok_idx, use_cache=False)
+
+        logits = model_output.logits
+        logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
+        x0_p, x0 = sample_tokens(logits, temperature=temperature, top_p=top_p, top_k=top_k)
+        x[:, current_block_start] = x0[:, current_block_start]
+        if histories is not None:
+            histories.append(x.clone().cpu())
+
+        if cgws is not None:
+            window_end  = max_length if cgws is None else min(current_block_end + cgws, max_length)
+            window_slice = slice(current_block_start, window_end)
+            cur_x = x[:, window_slice].clone()
+            cur_tok_idx = tok_idx[:, window_slice] if tok_idx is not None else None
+        else:
+            cur_x = x[:, current_block_start:].clone()
+            cur_tok_idx = tok_idx[:, current_block_start:] if tok_idx is not None else None
+
+        # Prepare attention mask for cached generation
+        if attention_mask != "full":
+            # Adjust attention mask for current position
+            if cgws is not None:
+                current_attention_mask = attention_mask[:, :, window_slice, :window_end]
+            else:
+                current_attention_mask = attention_mask[:, :, current_block_start:, :]
+        else:
+            current_attention_mask = attention_mask
+        
+        mask_index = (cur_x == mask_token_id)
+        mask_index[:, block_length:] = False
+        x0, x0_p = sample_step(
+            model, 
+            cur_x, 
+            current_block_start, current_attention_mask, cur_tok_idx, mask_index,
+            past_key_values, use_cache,
+            temperature, top_p, top_k, tar,
+        )
+
+        denoising_steps = steps_per_block[num_block]
+        step = 1
+        while step < denoising_steps:
+
+            cur_draft_steps = min(draft_steps, denoising_steps - step)
+            # if cur_draft_steps == 1:
+            # if denoising_steps - step == 1:
+            #     cur_x = token_filling(
+            #         cur_x, x0, x0_p,
+            #         step, denoising_steps, cur_draft_steps, timesteps[num_block],
+            #         pad_token_id, pad_target_penalty,
+            #         mask_index, unmask_threshold,
+            #         block_length,
+            #         alg_temp,
+            #     )
+            #     break
+
+            if (cur_x[:, :block_length] == mask_token_id).sum() == 0:
+                break
+
+            x_draft = token_filling(
+                cur_x, x0, x0_p,
+                step, denoising_steps, cur_draft_steps, timesteps[num_block],
+                pad_token_id, pad_target_penalty,
+                mask_index, unmask_threshold,
+                block_length,
+                alg_temp,
+            )
+
+            if denoising_steps - step > 1:
+                if use_cache:
+                    past_key_values = cache_batch_repeat_interleave(past_key_values, cur_draft_steps)
+
+                mask_index_draft = (x_draft == mask_token_id)
+                mask_index_draft[:, block_length:] = False
+                x0_draft, x0_p_draft = sample_step(
+                    model, 
+                    x_draft, 
+                    current_block_start, current_attention_mask, cur_tok_idx, mask_index_draft,
+                    past_key_values, use_cache,
+                    temperature, top_p, top_k, tar,
+                )
+
+                x_target = token_filling(
+                    x_draft, x0_draft, x0_p_draft,
+                    step+1, denoising_steps, 1, timesteps[num_block],
+                    pad_token_id, pad_target_penalty,
+                    mask_index_draft, unmask_threshold,
+                    block_length,
+                    alg_temp,
+                )
+                
+                x_draft = x_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])
+                x_target = x_target.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])
+                matched_draft_index = (x_target[:, :-1, :] == x_draft[:, 1:, :]).all(dim=-1)
+                matched_steps = torch.cumprod(matched_draft_index, dim=-1).sum(dim=-1) #NOTE: assert matched_steps.shape[0] == 1 for now
+                cur_x = x_draft[:, matched_steps, :].squeeze(1)
+                x0 = x0_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
+                x0_p = x0_p_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
+                past_key_values = cache_batch_select_indices(past_key_values, matched_steps)
+
+                step += matched_steps.item() + 1
+            else:
+                cur_x = x_draft
+                step += 1
+
+            
+            if cgws is not None:
+                x[:, window_slice] = cur_x
+            else:
+                x[:, current_block_start:] = cur_x
 
             if histories is not None:
-                histories.append(x.clone())
+                histories.append(x.clone().cpu())
+
+            mask_index = (cur_x == mask_token_id)
+            mask_index[:, block_length:] = False
+            
+            if (cur_x[:, :block_length] == mask_token_id).sum() == 0:
+                break
+
+
+        # # update cache
+        # if use_cache:
+        #     model_output = model(x, attention_mask, tok_idx, use_cache=True)
+        #     past_key_values = model_output.past_key_values
+        #     # Extract only previous block cache
+        #     new_past_key_values = []
+        #     for step in range(len(past_key_values)):
+        #         new_past_key_values.append(())
+        #         for j in range(len(past_key_values[step])):
+        #             new_past_key_values[step] += (past_key_values[step][j][:, :current_block_start, :],)
+        #     past_key_values = new_past_key_values
+
+        block_all_pad = torch.all(
+            x[:, current_block_start:current_block_end] == pad_token_id
+        )
+        # if block_all_pad:
+        #     if current_block_end < x.size(1):
+        #         x[:, current_block_end:] = pad_token_id
+        #     if histories is not None:
+        #         histories.append(x.clone().cpu())
+        #     break
+
+    if return_dict_in_generate:
+        return DreamModelOutput(
+            sequences=x,
+            history=histories,
+        )
+    else:
+        return x
+
+@torch.no_grad()
+def sample_step(
+    model,
+    x,
+    current_block_start, current_attention_mask, cur_tok_idx, mask_index,
+    past_key_values, use_cache,
+    temperature, top_p, top_k, tar,
+):
+    if use_cache:
+        model_output = model(x, current_attention_mask, cur_tok_idx, 
+                            past_key_values=past_key_values, use_cache=True)
+        logits = model_output.logits
+        logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
+    else:
+        model_output = model(x, current_attention_mask, cur_tok_idx, use_cache=False)
+        logits = model_output.logits
+        logits = logits[:, current_block_start:]
+        logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
+
+    # mask_logits = logits[mask_index]
+    x0_p, x0 = sample_tokens(logits, temperature, top_p=top_p, top_k=top_k, tar=tar)
+
+    return x0, x0_p
+
+@torch.no_grad()
+def token_filling(
+    x, x0, x0_p,
+    step, denoising_steps, draft_steps, timesteps,
+    pad_token_id, pad_target_penalty,
+    mask_index, unmask_threshold,
+    block_length,
+    alg_temp,
+):
+
+    x_draft = x.unsqueeze(1).expand(x.shape[0], draft_steps, *x.shape[1:]).clone()
+
+    # —— pad token penalty ——
+    _pad_target_divisor = pad_target_penalty
+    _pad_mask_flat = (x0 == pad_token_id)  
+    if _pad_mask_flat.any():
+        x0_p = x0_p.clone()
+        x0_p[_pad_mask_flat] = x0_p[_pad_mask_flat] / _pad_target_divisor
+
+    confidence = torch.full_like(x, -torch.inf, device=x.device, dtype=x0_p.dtype)
+    confidence = confidence.float()
+    confidence[mask_index] = x0_p[mask_index]
+    confidence[:, block_length:] = -torch.inf
+    # confidence = torch.where(mask_index, x0_p, -torch.inf)
+    num_mask_token = mask_index.sum(dim=-1)
+
+    if unmask_threshold is None:
         
-        if return_dict_in_generate:
-            return DreamModelOutput(
-                sequences=x,
-                history=histories,
-            )
+        transfer_index = torch.zeros_like(x_draft, dtype=torch.bool)
+        for j in range(x_draft.shape[0]):
+            for k in range(draft_steps):
+                
+                t = timesteps[step + k]
+                s = timesteps[step + k + 1]
+                number_transfer_tokens = int(num_mask_token[j] * (1 - s / t)) if step < denoising_steps - 1 else int(num_mask_token[j])
+                
+                if number_transfer_tokens > 0:
+                    if alg_temp is None or alg_temp == 0:
+                        _, idx = torch.topk(confidence[j], number_transfer_tokens)
+                    else:
+                        confidence = confidence / alg_temp
+                        confidence = F.softmax(confidence, dim=-1)
+                        idx = torch.multinomial(confidence, num_samples=number_transfer_tokens)
+                    
+                    confidence[j, idx] = -torch.inf
+                    transfer_index[j, k:, idx] = True
+                    
+    # TODO         
+    # else:
+    #     selected_map = torch.zeros_like(x, dtype=torch.bool)
+    #     selected_map[mask_index] = (x0_p >= unmask_threshold)
+    #     no_sel = ~selected_map.any(dim=-1)  # [B]
+    #     no_sel = no_sel & mask_index.any(dim=-1)
+
+    #     if no_sel.any():
+    #         masked_scores = confidence.masked_fill(~mask_index, float("-inf"))
+    #         best_idx = torch.argmax(masked_scores, dim=-1)
+    #         selected_rows = torch.nonzero(no_sel, as_tuple=False).squeeze(-1)
+    #         selected_map[selected_rows, best_idx[selected_rows]] = True
+
+    #     selected_map &= mask_index
+    #     x_candidates = torch.full_like(x, mask_token_id, dtype=torch.long)
+    #     x_candidates[mask_index] = x0
+
+    #     x[selected_map] = x_candidates[selected_map]
+    
+    x_draft[transfer_index] = x0.unsqueeze(1).expand_as(x_draft)[transfer_index]
+    x_draft = x_draft.view(x.shape[0] * draft_steps, *x.shape[1:]) # (batch * draft_steps, seq_len)
+    return x_draft
+
+@torch.no_grad()
+def cache_batch_repeat_interleave(past_key_values, n):
+    '''
+        past_key_values: 
+        a list of n_heads tuples (key, value)
+        key: (batch, seq_len, head_dim)
+        value: (batch, seq_len, head_dim)
+
+        new_past_key_values:
+        a list of n_heads tuples (key, value)
+        key: (batch * n, seq_len, head_dim)
+        value: (batch * n, seq_len, head_dim)
+    '''
+    new_past_key_values = []
+    for i in range(len(past_key_values)):
+        new_past_key_values.append(())
+        for j in range(len(past_key_values[i])):
+            new_past_key_values[i] += (past_key_values[i][j].repeat(n, 1, 1),)
+    return new_past_key_values
+
+@torch.no_grad()
+def cache_batch_select_indices(past_key_values, indices):
+    '''
+        past_key_values: 
+        a list of n_heads tuples (key, value)
+        key: (batch, seq_len, head_dim)
+        value: (batch, seq_len, head_dim)
+    '''
+    new_past_key_values = []
+    for i in range(len(past_key_values)):
+        new_past_key_values.append(())
+        for j in range(len(past_key_values[i])):
+            new_past_key_values[i] += (past_key_values[i][j][indices, ...],)
+    return new_past_key_values
+
+import random 
+def random_select(data_list, random_k):
+    data_list = random.sample(data_list, random_k)
+    return data_list
+
+
+# obtain prompt
+def get_prompt(data_i):
+    return Template(system_prompts).render(problem = data_i["question"])
+
+
+
+def extract_final_boxed_answer(s: str):
+    tag = r'\boxed{'
+    start = s.rfind(tag)          # last \boxed{
+    if start == -1:
+        return "Can not extract the answer!"
+
+    i = start + len(tag)
+    depth = 1                    # we are already inside one '{'
+    buf = []
+
+    while i < len(s) and depth:
+        ch = s[i]
+        if ch == '{':
+            depth += 1
+        elif ch == '}':
+            depth -= 1
+            if depth == 0:       # matching '}' for the opening \boxed{
+                break
+        buf.append(ch)
+        i += 1
+
+    return ''.join(buf) if depth == 0 else "Can not extract the answer!"
+
+
+
+
+def extract_code(full_output):
+    matches = re.findall(r"```python(.*?)```", full_output, re.DOTALL)
+    if matches:
+        code_output = matches[-1].strip()
+    else:
+        code_output = "We can not extract the code in the output. "
+    return code_output
+
+
+
+def denoise_step_map(history, mask_id: int, sample_idx: int = 0):
+    L = history[0].shape[1]       
+    step_map = torch.zeros(L, dtype=torch.long)
+    prev = torch.full((L,), mask_id, dtype=torch.long)
+
+    for t, snap in enumerate(history, start=0):  
+        cur = snap[sample_idx]       
+        changed = (prev == mask_id) & (cur != mask_id)
+        step_map[changed] = t
+        prev = cur
+        if (step_map == 0).sum() == 0:    
+            break
+    return step_map
+
+
+
+from tqdm import tqdm
+
+
+
+
+def worker(pretrained_model, rank, prompts, orig_idx, seq_dict, step_dict, batch_size, config):
+    torch.cuda.set_device(rank)
+    device = torch.device(f"cuda:{rank}")
+
+    # load model once
+    model_gpu = (DreamModel.from_pretrained(pretrained_model,
+                                  trust_remote_code=True,
+                                  torch_dtype=torch.bfloat16)
+                 .to(device)
+                 .eval())
+    model_gpu.diffusion_generate = types.MethodType(DreamGenerationMixin.diffusion_generate, model_gpu)
+    model_gpu._sample = types.MethodType(DreamGenerationMixin._sample, model_gpu)   
+    tokenizer_gpu = DreamTokenizer.from_pretrained(pretrained_model, trust_remote_code=True)
+
+    pad_id = model_gpu.config.pad_token_id
+    mask_id = model_gpu.config.mask_token_id
+    eos_id = tokenizer_gpu.convert_tokens_to_ids("<|im_end|>")
+
+    # process in chunks of `batch_size`
+    for start in tqdm(range(0, len(prompts), batch_size),
+                      desc=f"GPU {rank}", position=rank, leave=True):
+        batch_prompts = prompts[start:start+batch_size]
+        batch_idxs    = orig_idx[start:start+batch_size]
+
+        # tokenize & move to GPU
+        enc = tokenizer_gpu(batch_prompts,
+                            padding=True, #truncation=True,
+                            return_tensors="pt", padding_side="left")
+        prompt_ids = enc["input_ids"].to(device)
+
+        attn_mask = prompt_ids.ne(pad_id)
+        #attn_mask = torch.ones_like(prompt_ids, dtype=torch.bool)
+        attn_mask = attn_mask.to(device=model_gpu.device)
+
+        if config.rollout.use_cache == False:
+            config.rollout.further_horizon = None
+
+        generation_config = DreamGenerationConfig(
+            output_history=True,            
+            return_dict_in_generate=True,   
+            max_length=config.rollout.max_gen_length + prompt_ids.shape[1],     
+            steps=config.rollout.steps,                  
+            temperature=config.rollout.temperature,  
+            top_p=config.rollout.top_p,               
+            top_k=config.rollout.top_k,            
+            tar=config.rollout.target,               
+            alg_temp=config.rollout.alg_temp,        
+        )
+        
+        if config.rollout.remasking_strategy == "low_confidence_static":
+            unmask_threshold = None
         else:
-            return x
+            unmask_threshold = config.rollout.dynamic_threshold
+
+        generation_ids = block_diffusion_generate(
+            model_gpu,
+            prompt_ids,
+            attention_mask=attn_mask,
+            generation_config=generation_config,
+            block_length=config.rollout.block_size,
+            use_cache=config.rollout.use_cache,
+            further_horizon=config.rollout.further_horizon,
+            mask_token_id = mask_id,
+            eos_token_id = eos_id,
+            pad_token_id = pad_id,
+            pad_target_penalty = config.rollout.pad_target_penalty,
+            unmask_threshold = unmask_threshold
+        )
+        generation_ids.sequences = generation_ids.sequences.cpu()
+        torch.cuda.empty_cache()
+
+        # decode
+        seq_ids = generation_ids.sequences[:, prompt_ids.shape[1]:].tolist()
+        texts   = tokenizer_gpu.batch_decode(
+            seq_ids, skip_special_tokens=False, clean_up_tokenization_spaces=True)
+
+        # compute and store step maps
+        for i, idx in enumerate(batch_idxs):
+            # extract step map for sample i in this batch
+            m = denoise_step_map(generation_ids.history, mask_id=mask_id, sample_idx=i)
+            step_map = m[prompt_ids.shape[1]:].tolist()
+            seq_dict[idx]  = texts[i]
+            step_dict[idx] = step_map
+
+        # free unused GPU cache
+        torch.cuda.empty_cache()
+
+def get_data_chunk(data, num_node, node_idx):
+    total = len(data)
+    chunk_size = (total + num_node - 1) // num_node 
+    start_idx = node_idx * chunk_size
+    end_idx = min((node_idx + 1) * chunk_size, total)
+    return data[start_idx:end_idx]
+
+
+if __name__ == "__main__":
+
+    config = get_config()
+
+    mp.set_start_method("spawn", force=True)
+
+    
+    k_sample = config.rollout.num_response_per_task
+    batch_size = config.rollout.batch_size
+    system_prompts = '''<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nYou need to put your final answer in \\boxed{}. This is the problem:\n{{problem}}<|im_end|>\n<|im_start|>assistant\n'''
+    
+    project_name = config.experiment.project
+
+    code_eval = False
+
+    dataset = config.dataset.eval_dataset
+    pretrained_model = config.model
+    if config.dataset.data_type == "code":
+        code_eval = True
+        system_prompts_function = '''<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n{{problem}}\nPlace your code within a single Python code block ```python ```. Do not include more than one code block. <|im_end|>\n<|im_start|>assistant\n'''
+        system_prompts_stdio = '''<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nThis is the problem:\n{{problem}}\nYou should put your code in ```python ```. Use input() to read input and print() to produce output in your script. <|im_end|>\n<|im_start|>assistant\n'''
+    elif config.dataset.data_type == "option":
+        system_prompts = '''<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nThis is the problem:\n{{problem}}\nYou need to think step by step and put the final option (A, B, C, or D only—no other character) in \\boxed{}. <|im_end|>\n<|im_start|>assistant\n'''
+    
+    outputs_name = "eval-" + pretrained_model.replace("/", ".") + "-" + dataset
+
+    with open("../data/" + dataset + ".json", 'r') as f:
+        data = json.load(f)
+    #data = [data[i] for i in range(32)]
+
+    num_node = config.experiment.num_node
+    node_index = config.experiment.node_index
+    if num_node > 1:
+        data = get_data_chunk(data, num_node, node_index)
+    
+    num = len(data)
+
+    tokenizer = DreamTokenizer.from_pretrained(pretrained_model, trust_remote_code=True)
+
+
+
+
+    # initialization
+    generation_prompts = []
+    prefix_list = []
+    index_list = []
+    for step in range(num):
+        # preprocess
+        if code_eval:
+            if data[step]["test_method"] == "stdio":
+                system_prompts = system_prompts_stdio
+                prefix_list = prefix_list + [None] * k_sample
+            else:
+                system_prompts = system_prompts_function + data[step]["prefix"]
+                prefix_list = prefix_list + [data[step]["prefix"]] * k_sample
+        generation_prompts = generation_prompts + [get_prompt(data[step])] * k_sample
+        
+        index_list = index_list + [step] * k_sample
+        data[step]["full_output"] = []
+        data[step]["step_map"] = []
+        data[step]["extracted_output"] = []
+        data[step]["response_length"] = []
+        data[step]["prompt"] = get_prompt(data[step])
+
+    
+
+    # --------------------------- 1. shuffle --------------------------
+    cprint("start generation...", "green")
+
+    all_prompts = generation_prompts
+    N = len(all_prompts)
+
+    shuffled_idx     = list(range(N))
+    random.shuffle(shuffled_idx)
+    shuffled_prompts = [all_prompts[i] for i in shuffled_idx]
+
+    # --------------------- 2. split to each GPU ----------------------
+    n_gpu = torch.cuda.device_count()
+    assert n_gpu > 1, "need >=2 GPUs for parallel inference"
+
+    def split_even(lst, n):
+        k, m = divmod(len(lst), n)
+        return [lst[i*k+min(i,m):(i+1)*k+min(i+1,m)] for i in range(n)]
+
+    prompt_chunks = split_even(shuffled_prompts, n_gpu)
+    idx_chunks    = split_even(shuffled_idx,     n_gpu)
+
+    
+
+    # ------------------- 4. launch all workers -----------------------
+    manager    = mp.Manager()
+    seq_dict   = manager.dict()   # {shuffled_pos: text}
+    step_dict  = manager.dict()   # {shuffled_pos: step_map}
+    procs = []
+
+    for rk in range(n_gpu):
+        p = mp.Process(target=worker,
+                    args=(pretrained_model, rk,
+                            prompt_chunks[rk],
+                            idx_chunks[rk],
+                            seq_dict,
+                            step_dict,
+                            batch_size,
+                            config))
+        p.start()
+        procs.append(p)
+
+    for p in procs:
+        p.join()
+
+    # ------------------- 5. restore original order -------------------
+    restored_outputs    = [seq_dict[i]  for i in range(N)]
+    restored_step_maps  = [step_dict[i] for i in range(N)]
+
+    cprint("generation job done!", "green")
+
+
+
+
+
+
+    import re
+    
+
+    def get_token_lengths(strings, tokenizer):
+        pad_token = tokenizer.pad_token
+
+        escaped = re.escape(pad_token)
+        pattern = rf"(?:{escaped})+"
+        remove_pattern = escaped
+
+        collapse_re = re.compile(pattern)
+
+        lengths = []
+        for s in strings:
+            s_clean = collapse_re.sub(lambda _: pad_token if isinstance(pad_token, str) else '', s)
+            s_clean = re.sub(remove_pattern, '', s_clean)
+            lengths.append(len(tokenizer.encode(s_clean, add_special_tokens=False)))
+        return lengths
+
+    response_length = get_token_lengths(restored_outputs, tokenizer)
+    mean_response_length = sum(response_length) / len(response_length)
+
+
+
+
+    # process generated codes
+    step = 0
+    for full_output in restored_outputs:
+        if code_eval:
+            if data[int(step/k_sample)]["test_method"] == "function":
+                extracted_output = extract_code(prefix_list[step] + full_output)
+            else:
+                extracted_output = extract_code(full_output)
+        else:
+            extracted_output = extract_final_boxed_answer(full_output)
+        index_i = index_list[step]
+        data[index_i]["full_output"].append(full_output)
+        data[index_i]["step_map"].append(restored_step_maps[step])
+        data[index_i]["extracted_output"].append(extracted_output)
+        data[index_i]["response_length"].append(response_length[step])
+        step += 1
+
+    # output the data
+    if num_node > 1:
+        output_file_name = "../" + project_name + f"/temp_data/outputs-{node_index}-" + outputs_name + ".json"
+    else:
+        output_file_name = "../" + project_name + "/temp_data/outputs-" + outputs_name + ".json"
+    os.makedirs(os.path.dirname(output_file_name), exist_ok=True)
+    with open(output_file_name, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2, ensure_ascii=False)
+
+

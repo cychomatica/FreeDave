@@ -123,11 +123,12 @@ class DreamGenerationConfig(GenerationConfig):
         self.temperature: float = kwargs.pop("temperature", 0.0)
         self.top_p: Optional[float] = kwargs.pop("top_p", None)
         self.top_k: Optional[int] = kwargs.pop("top_k", None)
-        self.max_length = kwargs.pop("max_length", 20)
+        self.max_gen_length = kwargs.pop("max_gen_length", 20)
         self.max_new_tokens = kwargs.pop("max_new_tokens", None)
         # diffusion specific params
         self.eps: float = kwargs.pop("eps", 1e-3)
         self.steps: int = kwargs.pop("steps", 512)
+        self.draft_steps: int = kwargs.pop("draft_steps", 1)
         self.alg: str = kwargs.pop("alg", 'origin')
         self.alg_temp: Optional[float] = kwargs.pop("alg_temp", None)
 
@@ -229,7 +230,7 @@ class DreamGenerationMixin:
             generation_config.max_length = generation_config.max_new_tokens + input_ids_length
 
         elif has_default_max_length:
-            if generation_config.max_length == DreamGenerationConfig().max_length:
+            if generation_config.max_length == DreamGenerationConfig().max_gen_length:
                 generation_config.max_length = generation_config.max_length + input_ids_length
                 max_position_embeddings = getattr(self.config, "max_position_embeddings", None)
                 if max_position_embeddings is not None:
@@ -334,7 +335,7 @@ class DreamGenerationMixin:
 
         # 3. Prepare `max_length`.
         input_ids_length = input_ids.shape[-1]
-        has_default_max_length = kwargs.get("max_length") is None and generation_config.max_length is not None
+        has_default_max_length = kwargs.get("max_length") is None and generation_config.max_gen_length is not None
         generation_config = self._prepare_generated_length(
             generation_config=generation_config,
             has_default_max_length=has_default_max_length,
@@ -397,7 +398,7 @@ class DreamGenerationMixin:
         
         output_history = generation_config.output_history
         return_dict_in_generate = generation_config.return_dict_in_generate
-        max_length = generation_config.max_length
+        max_length = generation_config.max_gen_length
         mask_token_id = generation_config.mask_token_id
         steps = generation_config.steps
         temperature = generation_config.temperature

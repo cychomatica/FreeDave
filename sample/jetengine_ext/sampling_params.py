@@ -16,3 +16,5 @@ class SamplingParams:
     topp: float = 1
     remasking_strategy: Literal['sequential', 'low_confidence_static', 'low_confidence_dynamic'] = 'low_confidence_static'
     stop_words: list[int] | None = None
+    logits_greedy_sampling: bool = False
+    fast_sampling_version: Literal['v1', 'v0'] = 'v0'

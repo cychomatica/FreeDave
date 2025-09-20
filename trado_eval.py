@@ -1,5 +1,5 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from trado_generate import block_diffusion_generate, block_diffusion_generate_fast
+from trado_generate import block_diffusion_generate, block_diffusion_generate_FreeDave, block_diffusion_generate_FreeDave_v1
 from monitor_utils import ForwardHookCounter
 import time
 import json, os
@@ -30,20 +30,36 @@ if __name__ == '__main__':
     nfe_counter = ForwardHookCounter(model)
     
     if config.rollout.draft_steps > 1:
-        generate_func = partial(block_diffusion_generate_fast, 
-                                model=model,
-                                mask_id=151669,
-                                gen_length=config.rollout.max_token,
-                                block_length=config.rollout.block_size,
-                                denoising_steps=config.rollout.denoising_steps_per_block,
-                                draft_steps=config.rollout.draft_steps,
-                                temperature=config.rollout.temperature,
-                                top_k=config.rollout.top_k,
-                                top_p=config.rollout.top_p,
-                                remasking_strategy=config.rollout.remasking_strategy,
-                                confidence_threshold=config.rollout.dynamic_threshold,
-                                )
-        cprint(f'Using fast sampling with draft steps={config.rollout.draft_steps}', color='green')
+        if config.rollout.fast_sampling_version == 'v1':
+            generate_func = partial(block_diffusion_generate_FreeDave_v1, 
+                                    model=model,
+                                    mask_id=151669,
+                                    gen_length=config.rollout.max_token,
+                                    block_length=config.rollout.block_size,
+                                    denoising_steps=config.rollout.denoising_steps_per_block,
+                                    draft_steps=config.rollout.draft_steps,
+                                    temperature=config.rollout.temperature,
+                                    top_k=config.rollout.top_k,
+                                    top_p=config.rollout.top_p,
+                                    remasking_strategy=config.rollout.remasking_strategy,
+                                    confidence_threshold=config.rollout.dynamic_threshold,
+                                    )
+            cprint(f'Using fast sampling (v1) with draft steps={config.rollout.draft_steps}', color='green')
+        else:
+            generate_func = partial(block_diffusion_generate_FreeDave, 
+                                    model=model,
+                                    mask_id=151669,
+                                    gen_length=config.rollout.max_token,
+                                    block_length=config.rollout.block_size,
+                                    denoising_steps=config.rollout.denoising_steps_per_block,
+                                    draft_steps=config.rollout.draft_steps,
+                                    temperature=config.rollout.temperature,
+                                    top_k=config.rollout.top_k,
+                                    top_p=config.rollout.top_p,
+                                    remasking_strategy=config.rollout.remasking_strategy,
+                                    confidence_threshold=config.rollout.dynamic_threshold,
+                                    )
+            cprint(f'Using fast sampling (v0) with draft steps={config.rollout.draft_steps}', color='green')
     else:
         generate_func = partial(block_diffusion_generate, 
                                 model=model,
