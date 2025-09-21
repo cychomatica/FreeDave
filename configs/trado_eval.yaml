@@ -3,12 +3,8 @@ experiment:
     num_node: 1 # the number of machines you have
     node_index: 0 # no need to change
 
-
-
-
 model: "Gen-Verse/TraDo-4B-Instruct" # absolute path of your model
 model_base: "trado" 
-
 
 # dataset you want to eval on, you need to download first, you can also modify your own dataset, see instructions in ./data
 dataset:
@@ -26,7 +22,7 @@ rollout:
     max_token: 2048 # max generation token num; 2048 for AIME2024 by default
     block_size: 4 # 4, 8, 16, 32
     denoising_steps_per_block: 4 # 4, 8, 16, 32
-    draft_steps: 1 # 1, 2, 4, 8
+    draft_steps: 4 # 1, 2, 4, 8
     top_p: 1.0
     top_k: 1
     remasking_strategy: "low_confidence_static" #"low_confidence_static""low_confidence_dynamic"

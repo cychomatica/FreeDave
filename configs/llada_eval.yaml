@@ -3,8 +3,7 @@ experiment:
     num_node: 1 # the number of machines you have
     node_index: 0 # no need to change
 
-
-model: "/home/shutongw/.cache/huggingface/hub/models--GSAI-ML--LLaDA-8B-Instruct/snapshots/9275bf8f5a5687507189baf4657e91c51b2be338" # absolute path of your model
+model: "GSAI-ML/LLaDA-8B-Instruct" # absolute path of your model
 model_base: "llada" # set llada for LLaDA and MMaDA
 
 # dataset you want to eval on, you need to download first, you can also modify your own dataset, see instructions in ./data
@@ -21,7 +20,7 @@ rollout:
     steps: 1024 # total steps of unmasking
     max_gen_length: 1024
     batch_size: 2
-    remasking_strategy: "low_confidence_dynamic" #"low_confidence_static""low_confidence_dynamic"
+    remasking_strategy: "low_confidence_static" #"low_confidence_static""low_confidence_dynamic"
     target: "confidence" # target to decide which tokens to unmask, eg. confidence, margin_confidence and neg_entropy
     dynamic_threshold: 0.95 # no use for "low_confidence_static"
     block_size: 32

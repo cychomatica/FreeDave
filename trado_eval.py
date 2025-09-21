@@ -5,7 +5,7 @@ import time
 import json, os
 from functools import partial
 from omegaconf import OmegaConf
-from utils import data_prepare, output_process
+from eval_utils import data_prepare, output_process, get_token_lengths, reward
 from tqdm import tqdm
 from termcolor import cprint
 
@@ -20,7 +20,7 @@ if __name__ == '__main__':
 
     dataset = config.dataset.eval_dataset
     data_path = 'data/' + dataset + '.json'
-    data = data_prepare(config.dataset.data_type, data_path, config.rollout.start_with_think)
+    data = data_prepare(config.model_base, config.dataset.data_type, data_path, config.rollout.start_with_think)
 
     model_path = config.model
     model = AutoModelForCausalLM.from_pretrained(
@@ -44,7 +44,7 @@ if __name__ == '__main__':
                                     remasking_strategy=config.rollout.remasking_strategy,
                                     confidence_threshold=config.rollout.dynamic_threshold,
                                     )
-            cprint(f'Using fast sampling (v1) with draft steps={config.rollout.draft_steps}', color='green')
+            cprint(f'Evaluating {os.path.basename(model_path)} on {dataset}.\nUsing fast sampling (v1) with draft steps={config.rollout.draft_steps}', color='green')
         else:
             generate_func = partial(block_diffusion_generate_FreeDave, 
                                     model=model,
@@ -59,7 +59,7 @@ if __name__ == '__main__':
                                     remasking_strategy=config.rollout.remasking_strategy,
                                     confidence_threshold=config.rollout.dynamic_threshold,
                                     )
-            cprint(f'Using fast sampling (v0) with draft steps={config.rollout.draft_steps}', color='green')
+            cprint(f'Evaluating {os.path.basename(model_path)} on {dataset}.\nUsing fast sampling (v0) with draft steps={config.rollout.draft_steps}', color='green')
     else:
         generate_func = partial(block_diffusion_generate, 
                                 model=model,
@@ -73,7 +73,7 @@ if __name__ == '__main__':
                                 remasking_strategy=config.rollout.remasking_strategy,
                                 confidence_threshold=config.rollout.dynamic_threshold,
                                 )
-        cprint(f'Using normal sampling', color='green')
+        cprint(f'Evaluating {os.path.basename(model_path)} on {dataset}.\nUsing normal sampling', color='green')
 
     total_sampling_time = 0
     total_response_tokens = 0
@@ -97,14 +97,15 @@ if __name__ == '__main__':
 
         data[i]['full_output'].append(output_text)
         data[i]['cleaned_output'].append(cleaned_text)
-        data[i]['response_tokens'].append(len(output_ids[0]))
+        data[i]['response_tokens'] = get_token_lengths(data[i]['cleaned_output'], tokenizer)
         data[i]['response_time'].append(sampling_time)
         data[i]['response_nfe'].append(nfe)
         
         total_sampling_time += sampling_time
-        total_response_tokens += len(output_ids[0])
+        total_response_tokens += sum(data[i]['response_tokens'])
         total_nfe += nfe
 
+    cprint(f'Generation done!', color='green')
     cprint(f'Avg throughput (tokens/s): {total_response_tokens / total_sampling_time}', color='green')
     cprint(f'Avg throughput (tokens/nfe): {total_response_tokens / total_nfe}', color='green')
 
@@ -114,7 +115,9 @@ if __name__ == '__main__':
     os.makedirs(save_dir, exist_ok=True)
 
     sampling_mode = 'normal' if config.rollout.draft_steps == 1 else f'fast-draft={config.rollout.draft_steps}'
-    save_filename = f'{os.path.basename(model_path)}-{sampling_mode}-block_size={config.rollout.block_size}-block_denoising_steps={config.rollout.denoising_steps_per_block}-{dataset}.json'
+    save_filename = f'{os.path.basename(model_path)}-{sampling_mode}-max_gen_length={config.rollout.max_token}-block_size={config.rollout.block_size}-block_denoising_steps={config.rollout.denoising_steps_per_block}-{dataset}.json'
     
     with open(os.path.join(save_dir, save_filename), 'w') as f:
         json.dump(data, f, indent=4)
+
+    reward(config, save_dir, save_filename)

@@ -7,32 +7,21 @@ from jinja2 import Template
 import torch
 from termcolor import cprint
 import torch.nn.functional as F
-import transformers
-from transformers import AutoTokenizer, AutoModel
-import multiprocessing as mp
 
-
-from sample.dream import DreamTokenizer
-from sample.dream.modeling_dream import DreamModel
-from sample.dream.generation_utils_block import DreamGenerationMixin
+from modeling.dream import DreamTokenizer
+from modeling.dream.modeling_dream import DreamModel
+from modeling.dream.generation_utils_block import DreamGenerationMixin
 import types
-from sample.dream.generation_utils_block import DreamGenerationConfig
+from modeling.dream.generation_utils_block import DreamGenerationConfig
 
 
 from transformers.utils import ModelOutput
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Optional, Tuple, Union
 import torch.distributions as dists
 from dataclasses import dataclass
 from torch.nn import functional as F
 import torch
 
-
-from omegaconf import DictConfig, ListConfig, OmegaConf
-def get_config():
-    cli_conf = OmegaConf.from_cli()
-    yaml_conf = OmegaConf.load(cli_conf.config)
-    conf = OmegaConf.merge(yaml_conf, cli_conf)
-    return conf
 
 def top_p_logits(logits, top_p=None):
     sorted_logits, sorted_indices = torch.sort(logits, descending=True)
@@ -53,7 +42,6 @@ def top_k_logits(logits, top_k=None):
     indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
     logits = logits.masked_fill(indices_to_remove, torch.finfo(logits.dtype).min)
     return logits
-
 
 def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, tar=None):
 
@@ -120,7 +108,7 @@ def block_diffusion_generate(
     
     output_history = generation_config.output_history
     return_dict_in_generate = generation_config.return_dict_in_generate
-    max_length = generation_config.max_gen_length
+    gen_length = generation_config.max_gen_length
     steps = generation_config.steps
     temperature = generation_config.temperature
     top_p = generation_config.top_p
@@ -133,8 +121,8 @@ def block_diffusion_generate(
     histories = [] if (return_dict_in_generate and output_history) else None
 
     # pad input_ids to max_length
-    x = F.pad(input_ids, (0, max_length - input_ids.shape[1]), value=mask_token_id)
-    gen_length = max_length - input_ids.shape[1]
+    x = F.pad(input_ids, (0, gen_length), value=mask_token_id)
+    max_length = gen_length + input_ids.shape[1]
     
     # Handle block configuration
     if block_length is None:
@@ -165,8 +153,6 @@ def block_diffusion_generate(
     else:
         tok_idx = None
         attention_mask = "full"
-    
-
 
     # Initialize cache for the prompt
     past_key_values = None
@@ -368,8 +354,9 @@ def block_diffusion_generate_(
     
     output_history = generation_config.output_history
     return_dict_in_generate = generation_config.return_dict_in_generate
-    max_length = generation_config.max_gen_length
+    gen_length = generation_config.max_gen_length
     steps = generation_config.steps
+    draft_steps = generation_config.draft_steps
     temperature = generation_config.temperature
     top_p = generation_config.top_p
     top_k = generation_config.top_k
@@ -381,8 +368,8 @@ def block_diffusion_generate_(
     histories = [] if (return_dict_in_generate and output_history) else None
 
     # pad input_ids to max_length
-    x = F.pad(input_ids, (0, max_length - input_ids.shape[1]), value=mask_token_id)
-    gen_length = max_length - input_ids.shape[1]
+    x = F.pad(input_ids, (0, gen_length), value=mask_token_id)
+    max_length = gen_length + input_ids.shape[1]
     
     # Handle block configuration
     if block_length is None:
@@ -425,7 +412,7 @@ def block_diffusion_generate_(
 
         # update cache
         if use_cache:
-            model_output = model(x, attention_mask, tok_idx, use_cache=True)
+            model_output = model(x.repeat(draft_steps,1), attention_mask, tok_idx, use_cache=True)
             past_key_values = model_output.past_key_values
             # Extract only previous block cache
             new_past_key_values = []
@@ -436,9 +423,9 @@ def block_diffusion_generate_(
             past_key_values = new_past_key_values
 
         else:
-            model_output = model(x, attention_mask, tok_idx, use_cache=False)
+            model_output = model(x.repeat(draft_steps,1), attention_mask, tok_idx, use_cache=False)
         
-        logits = model_output.logits
+        logits = model_output.logits[:1, ...]
         logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
         _, x0 = sample_tokens(logits, temperature=temperature, top_p=top_p, top_k=top_k)
         x[:, current_block_start] = x0[:, current_block_start]
@@ -474,11 +461,13 @@ def block_diffusion_generate_(
 
             x0, x0_p = sample_step(
                 model, 
-                cur_x, 
+                cur_x.repeat(draft_steps,1), 
                 current_block_start, current_attention_mask, cur_tok_idx, mask_index,
                 past_key_values, use_cache,
                 temperature, top_p, top_k, tar,
             )
+            x0 = x0[:1, ...]
+            x0_p = x0_p[:1, ...]
             
             if (cur_x[:, :block_length] == mask_token_id).sum() == 0:
                 break
@@ -706,6 +695,7 @@ def block_diffusion_generate_FreeDave(
                 x_target = x_target.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])
                 matched_draft_index = (x_target[:, :-1, :] == x_draft[:, 1:, :]).all(dim=-1)
                 matched_steps = torch.cumprod(matched_draft_index, dim=-1).sum(dim=-1) #NOTE: assert matched_steps.shape[0] == 1 for now
+                matched_steps.zero_() #NOTE: debug
                 cur_x = x_draft[:, matched_steps, :].squeeze(1)
                 x0 = x0_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
                 x0_p = x0_p_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
@@ -890,341 +880,3 @@ def cache_batch_select_indices(past_key_values, indices):
         for j in range(len(past_key_values[i])):
             new_past_key_values[i] += (past_key_values[i][j][indices, ...],)
     return new_past_key_values
-
-import random 
-def random_select(data_list, random_k):
-    data_list = random.sample(data_list, random_k)
-    return data_list
-
-
-# obtain prompt
-def get_prompt(data_i):
-    return Template(system_prompts).render(problem = data_i["question"])
-
-
-
-def extract_final_boxed_answer(s: str):
-    tag = r'\boxed{'
-    start = s.rfind(tag)          # last \boxed{
-    if start == -1:
-        return "Can not extract the answer!"
-
-    i = start + len(tag)
-    depth = 1                    # we are already inside one '{'
-    buf = []
-
-    while i < len(s) and depth:
-        ch = s[i]
-        if ch == '{':
-            depth += 1
-        elif ch == '}':
-            depth -= 1
-            if depth == 0:       # matching '}' for the opening \boxed{
-                break
-        buf.append(ch)
-        i += 1
-
-    return ''.join(buf) if depth == 0 else "Can not extract the answer!"
-
-
-
-
-def extract_code(full_output):
-    matches = re.findall(r"```python(.*?)```", full_output, re.DOTALL)
-    if matches:
-        code_output = matches[-1].strip()
-    else:
-        code_output = "We can not extract the code in the output. "
-    return code_output
-
-
-
-def denoise_step_map(history, mask_id: int, sample_idx: int = 0):
-    L = history[0].shape[1]       
-    step_map = torch.zeros(L, dtype=torch.long)
-    prev = torch.full((L,), mask_id, dtype=torch.long)
-
-    for t, snap in enumerate(history, start=0):  
-        cur = snap[sample_idx]       
-        changed = (prev == mask_id) & (cur != mask_id)
-        step_map[changed] = t
-        prev = cur
-        if (step_map == 0).sum() == 0:    
-            break
-    return step_map
-
-
-
-from tqdm import tqdm
-
-
-
-
-def worker(pretrained_model, rank, prompts, orig_idx, seq_dict, step_dict, batch_size, config):
-    torch.cuda.set_device(rank)
-    device = torch.device(f"cuda:{rank}")
-
-    # load model once
-    model_gpu = (DreamModel.from_pretrained(pretrained_model,
-                                  trust_remote_code=True,
-                                  torch_dtype=torch.bfloat16)
-                 .to(device)
-                 .eval())
-    model_gpu.diffusion_generate = types.MethodType(DreamGenerationMixin.diffusion_generate, model_gpu)
-    model_gpu._sample = types.MethodType(DreamGenerationMixin._sample, model_gpu)   
-    tokenizer_gpu = DreamTokenizer.from_pretrained(pretrained_model, trust_remote_code=True)
-
-    pad_id = model_gpu.config.pad_token_id
-    mask_id = model_gpu.config.mask_token_id
-    eos_id = tokenizer_gpu.convert_tokens_to_ids("<|im_end|>")
-
-    # process in chunks of `batch_size`
-    for start in tqdm(range(0, len(prompts), batch_size),
-                      desc=f"GPU {rank}", position=rank, leave=True):
-        batch_prompts = prompts[start:start+batch_size]
-        batch_idxs    = orig_idx[start:start+batch_size]
-
-        # tokenize & move to GPU
-        enc = tokenizer_gpu(batch_prompts,
-                            padding=True, #truncation=True,
-                            return_tensors="pt", padding_side="left")
-        prompt_ids = enc["input_ids"].to(device)
-
-        attn_mask = prompt_ids.ne(pad_id)
-        #attn_mask = torch.ones_like(prompt_ids, dtype=torch.bool)
-        attn_mask = attn_mask.to(device=model_gpu.device)
-
-        if config.rollout.use_cache == False:
-            config.rollout.further_horizon = None
-
-        generation_config = DreamGenerationConfig(
-            output_history=True,            
-            return_dict_in_generate=True,   
-            max_length=config.rollout.max_gen_length + prompt_ids.shape[1],     
-            steps=config.rollout.steps,                  
-            temperature=config.rollout.temperature,  
-            top_p=config.rollout.top_p,               
-            top_k=config.rollout.top_k,            
-            tar=config.rollout.target,               
-            alg_temp=config.rollout.alg_temp,        
-        )
-        
-        if config.rollout.remasking_strategy == "low_confidence_static":
-            unmask_threshold = None
-        else:
-            unmask_threshold = config.rollout.dynamic_threshold
-
-        generation_ids = block_diffusion_generate(
-            model_gpu,
-            prompt_ids,
-            attention_mask=attn_mask,
-            generation_config=generation_config,
-            block_length=config.rollout.block_size,
-            use_cache=config.rollout.use_cache,
-            further_horizon=config.rollout.further_horizon,
-            mask_token_id = mask_id,
-            eos_token_id = eos_id,
-            pad_token_id = pad_id,
-            pad_target_penalty = config.rollout.pad_target_penalty,
-            unmask_threshold = unmask_threshold
-        )
-        generation_ids.sequences = generation_ids.sequences.cpu()
-        torch.cuda.empty_cache()
-
-        # decode
-        seq_ids = generation_ids.sequences[:, prompt_ids.shape[1]:].tolist()
-        texts   = tokenizer_gpu.batch_decode(
-            seq_ids, skip_special_tokens=False, clean_up_tokenization_spaces=True)
-
-        # compute and store step maps
-        for i, idx in enumerate(batch_idxs):
-            # extract step map for sample i in this batch
-            m = denoise_step_map(generation_ids.history, mask_id=mask_id, sample_idx=i)
-            step_map = m[prompt_ids.shape[1]:].tolist()
-            seq_dict[idx]  = texts[i]
-            step_dict[idx] = step_map
-
-        # free unused GPU cache
-        torch.cuda.empty_cache()
-
-def get_data_chunk(data, num_node, node_idx):
-    total = len(data)
-    chunk_size = (total + num_node - 1) // num_node 
-    start_idx = node_idx * chunk_size
-    end_idx = min((node_idx + 1) * chunk_size, total)
-    return data[start_idx:end_idx]
-
-
-if __name__ == "__main__":
-
-    config = get_config()
-
-    mp.set_start_method("spawn", force=True)
-
-    
-    k_sample = config.rollout.num_response_per_task
-    batch_size = config.rollout.batch_size
-    system_prompts = '''<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nYou need to put your final answer in \\boxed{}. This is the problem:\n{{problem}}<|im_end|>\n<|im_start|>assistant\n'''
-    
-    project_name = config.experiment.project
-
-    code_eval = False
-
-    dataset = config.dataset.eval_dataset
-    pretrained_model = config.model
-    if config.dataset.data_type == "code":
-        code_eval = True
-        system_prompts_function = '''<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n{{problem}}\nPlace your code within a single Python code block ```python ```. Do not include more than one code block. <|im_end|>\n<|im_start|>assistant\n'''
-        system_prompts_stdio = '''<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nThis is the problem:\n{{problem}}\nYou should put your code in ```python ```. Use input() to read input and print() to produce output in your script. <|im_end|>\n<|im_start|>assistant\n'''
-    elif config.dataset.data_type == "option":
-        system_prompts = '''<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\nThis is the problem:\n{{problem}}\nYou need to think step by step and put the final option (A, B, C, or D only—no other character) in \\boxed{}. <|im_end|>\n<|im_start|>assistant\n'''
-    
-    outputs_name = "eval-" + pretrained_model.replace("/", ".") + "-" + dataset
-
-    with open("../data/" + dataset + ".json", 'r') as f:
-        data = json.load(f)
-    #data = [data[i] for i in range(32)]
-
-    num_node = config.experiment.num_node
-    node_index = config.experiment.node_index
-    if num_node > 1:
-        data = get_data_chunk(data, num_node, node_index)
-    
-    num = len(data)
-
-    tokenizer = DreamTokenizer.from_pretrained(pretrained_model, trust_remote_code=True)
-
-
-
-
-    # initialization
-    generation_prompts = []
-    prefix_list = []
-    index_list = []
-    for step in range(num):
-        # preprocess
-        if code_eval:
-            if data[step]["test_method"] == "stdio":
-                system_prompts = system_prompts_stdio
-                prefix_list = prefix_list + [None] * k_sample
-            else:
-                system_prompts = system_prompts_function + data[step]["prefix"]
-                prefix_list = prefix_list + [data[step]["prefix"]] * k_sample
-        generation_prompts = generation_prompts + [get_prompt(data[step])] * k_sample
-        
-        index_list = index_list + [step] * k_sample
-        data[step]["full_output"] = []
-        data[step]["step_map"] = []
-        data[step]["extracted_output"] = []
-        data[step]["response_length"] = []
-        data[step]["prompt"] = get_prompt(data[step])
-
-    
-
-    # --------------------------- 1. shuffle --------------------------
-    cprint("start generation...", "green")
-
-    all_prompts = generation_prompts
-    N = len(all_prompts)
-
-    shuffled_idx     = list(range(N))
-    random.shuffle(shuffled_idx)
-    shuffled_prompts = [all_prompts[i] for i in shuffled_idx]
-
-    # --------------------- 2. split to each GPU ----------------------
-    n_gpu = torch.cuda.device_count()
-    assert n_gpu > 1, "need >=2 GPUs for parallel inference"
-
-    def split_even(lst, n):
-        k, m = divmod(len(lst), n)
-        return [lst[i*k+min(i,m):(i+1)*k+min(i+1,m)] for i in range(n)]
-
-    prompt_chunks = split_even(shuffled_prompts, n_gpu)
-    idx_chunks    = split_even(shuffled_idx,     n_gpu)
-
-    
-
-    # ------------------- 4. launch all workers -----------------------
-    manager    = mp.Manager()
-    seq_dict   = manager.dict()   # {shuffled_pos: text}
-    step_dict  = manager.dict()   # {shuffled_pos: step_map}
-    procs = []
-
-    for rk in range(n_gpu):
-        p = mp.Process(target=worker,
-                    args=(pretrained_model, rk,
-                            prompt_chunks[rk],
-                            idx_chunks[rk],
-                            seq_dict,
-                            step_dict,
-                            batch_size,
-                            config))
-        p.start()
-        procs.append(p)
-
-    for p in procs:
-        p.join()
-
-    # ------------------- 5. restore original order -------------------
-    restored_outputs    = [seq_dict[i]  for i in range(N)]
-    restored_step_maps  = [step_dict[i] for i in range(N)]
-
-    cprint("generation job done!", "green")
-
-
-
-
-
-
-    import re
-    
-
-    def get_token_lengths(strings, tokenizer):
-        pad_token = tokenizer.pad_token
-
-        escaped = re.escape(pad_token)
-        pattern = rf"(?:{escaped})+"
-        remove_pattern = escaped
-
-        collapse_re = re.compile(pattern)
-
-        lengths = []
-        for s in strings:
-            s_clean = collapse_re.sub(lambda _: pad_token if isinstance(pad_token, str) else '', s)
-            s_clean = re.sub(remove_pattern, '', s_clean)
-            lengths.append(len(tokenizer.encode(s_clean, add_special_tokens=False)))
-        return lengths
-
-    response_length = get_token_lengths(restored_outputs, tokenizer)
-    mean_response_length = sum(response_length) / len(response_length)
-
-
-
-
-    # process generated codes
-    step = 0
-    for full_output in restored_outputs:
-        if code_eval:
-            if data[int(step/k_sample)]["test_method"] == "function":
-                extracted_output = extract_code(prefix_list[step] + full_output)
-            else:
-                extracted_output = extract_code(full_output)
-        else:
-            extracted_output = extract_final_boxed_answer(full_output)
-        index_i = index_list[step]
-        data[index_i]["full_output"].append(full_output)
-        data[index_i]["step_map"].append(restored_step_maps[step])
-        data[index_i]["extracted_output"].append(extracted_output)
-        data[index_i]["response_length"].append(response_length[step])
-        step += 1
-
-    # output the data
-    if num_node > 1:
-        output_file_name = "../" + project_name + f"/temp_data/outputs-{node_index}-" + outputs_name + ".json"
-    else:
-        output_file_name = "../" + project_name + "/temp_data/outputs-" + outputs_name + ".json"
-    os.makedirs(os.path.dirname(output_file_name), exist_ok=True)
-    with open(output_file_name, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2, ensure_ascii=False)
-
-

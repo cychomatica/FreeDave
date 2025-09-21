@@ -1,12 +1,12 @@
 import torch
-from transformers import AutoModel, AutoTokenizer
 from dream_generate import block_diffusion_generate, block_diffusion_generate_FreeDave, block_diffusion_generate_
 import time
 from omegaconf import OmegaConf
-from sample.dream.generation_utils_block import DreamGenerationConfig
-from sample.dream.tokenization_dream import DreamTokenizer
-from sample.dream.modeling_dream import DreamModel
+from modeling.dream.generation_utils_block import DreamGenerationConfig
+from modeling.dream.tokenization_dream import DreamTokenizer
+from modeling.dream.modeling_dream import DreamModel
 from monitor_utils import ForwardHookCounter
+from termcolor import cprint
 
 def get_config():
     cli_conf = OmegaConf.from_cli()
@@ -15,18 +15,18 @@ def get_config():
     return conf
 
 def generation_tokens_hook_func(step, x, logits):
-            print(f"############ Step {step} ############")
+            print(f'############ Step {step} ############')
             # print(tokenizer.decode(h[0].tolist()))
-            print(tokenizer.decode(x[0].tolist()).split(tokenizer.eos_token)[0].replace(tokenizer.mask_token, " "), end="\r")
+            print(tokenizer.decode(x[0].tolist()).split(tokenizer.eos_token)[0].replace(tokenizer.mask_token, ' '), end='\r')
             time.sleep(0.01)
             return x
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     
     config = get_config()
     # Load model and tokenizer
     model_path = config.model
-    model = DreamModel.from_pretrained(model_path, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map="cuda")
+    model = DreamModel.from_pretrained(model_path, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map='cuda')
     tokenizer = DreamTokenizer.from_pretrained(model_path, trust_remote_code=True)
     model.eval()
     forward_counter = ForwardHookCounter(model)
@@ -34,33 +34,34 @@ if __name__ == "__main__":
     # Initialize conversation history
     messages = []
 
-    print("Multi-turn conversation with Dream-v0-Instruct-7B")
-    print("Type 'exit' to end the conversation")
-    print("----------------------------------------------")
+    print('Multi-turn conversation with Dream-v0-Instruct-7B')
+    print('Type ''exit'' to end the conversation')
+    print('-'*66)
 
     while True:
         # Get user input
-        user_input = input("You: ")
+        user_input = input('You: ')
+        print('-'*66)
 
         # Check if user wants to exit
         if user_input.lower() == 'exit':
-            print("Conversation ended.")
+            print('Conversation ended.')
             break
 
         # Add user message to conversation history
-        messages.append({"role": "user", "content": user_input})
+        messages.append({'role': 'user', 'content': user_input})
 
         # Format input with chat template
         prompt = tokenizer.apply_chat_template(
-            messages, return_tensors="pt", return_dict=True, add_generation_prompt=True
+            messages, return_tensors='pt', return_dict=True, add_generation_prompt=True
         )
-        prompt_ids = prompt.input_ids.to(device="cuda")
-        attention_mask = prompt.attention_mask.to(device="cuda")
+        prompt_ids = prompt.input_ids.to(device='cuda')
+        attention_mask = prompt.attention_mask.to(device='cuda')
 
         generation_config = DreamGenerationConfig(
             output_history=True,            
             return_dict_in_generate=True,   
-            max_length=config.rollout.max_gen_length + prompt_ids.shape[1],     
+            max_gen_length=config.rollout.max_gen_length,     
             steps=config.rollout.steps,        
             draft_steps=config.rollout.draft_steps,
             temperature=config.rollout.temperature,  
@@ -69,7 +70,7 @@ if __name__ == "__main__":
             tar=config.rollout.target,               
             alg_temp=config.rollout.alg_temp,        
         )
-        if config.rollout.remasking_strategy == "low_confidence_static":
+        if config.rollout.remasking_strategy == 'low_confidence_static':
             unmask_threshold = None
         else:
             unmask_threshold = config.rollout.dynamic_threshold
@@ -101,8 +102,39 @@ if __name__ == "__main__":
         generation = generation.split(tokenizer.eos_token)[0].strip()
 
         # Print response
-        print("Model:", generation)
-        print(f"Normal generation: (time: {end_time - start_time} seconds; num of forward passes: {forward_counter.counter.count}; avg step forward time: {(end_time - start_time) / forward_counter.counter.count} seconds)")
+        print('Model:', generation)
+        cprint(f'Normal generation: (time: {end_time - start_time} seconds; num of forward passes: {forward_counter.counter.count}; avg step forward time: {(end_time - start_time) / forward_counter.counter.count} seconds)', 'cyan')
+        print('-'*66)
+
+        # Generate response
+        forward_counter.reset_count()
+        start_time = time.time()
+        with forward_counter.count_context():
+            output = block_diffusion_generate_(
+                model,
+                prompt_ids,
+                attention_mask=attention_mask,
+                generation_config=generation_config,
+                block_length=config.rollout.block_size,
+                use_cache=config.rollout.use_cache,
+                further_horizon=config.rollout.further_horizon,
+                mask_token_id = model.config.mask_token_id,
+                eos_token_id = model.config.eos_token_id,
+                pad_token_id = model.config.pad_token_id,
+                pad_target_penalty = config.rollout.pad_target_penalty,
+                unmask_threshold = unmask_threshold
+            )
+        end_time = time.time()
+        output.sequences = output.sequences.cpu()
+        torch.cuda.empty_cache()
+
+        # Process response
+        generation = tokenizer.decode(output.sequences[0][len(prompt_ids[0]):].tolist())
+        generation = generation.split(tokenizer.eos_token)[0].strip()
+
+        # Print response
+        print('Model:', generation)
+        cprint(f'Normal batch generation: (time: {end_time - start_time} seconds; num of forward passes: {forward_counter.counter.count}; avg step forward time: {(end_time - start_time) / forward_counter.counter.count} seconds)', 'cyan')
         print('-'*66)
 
         # Generate response
@@ -132,12 +164,12 @@ if __name__ == "__main__":
         generation = generation.split(tokenizer.eos_token)[0].strip()
 
         # Print response
-        print("Model:", generation)
-        print(f"Fast generation: (time: {end_time - start_time} seconds; num of forward passes: {forward_counter.counter.count}; avg step forward time: {(end_time - start_time) / forward_counter.counter.count} seconds)")
+        print('Model:', generation)
+        cprint(f'Fast generation: (time: {end_time - start_time} seconds; num of forward passes: {forward_counter.counter.count}; avg step forward time: {(end_time - start_time) / forward_counter.counter.count} seconds)', 'cyan')
         print('-'*66)
 
         # Add model response to conversation history
-        messages.append({"role": "assistant", "content": generation})
+        messages.append({'role': 'assistant', 'content': generation})
 
 
 '''An example conversation (maybe different due to randomness)

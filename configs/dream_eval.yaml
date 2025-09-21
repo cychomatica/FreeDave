@@ -3,16 +3,13 @@ experiment:
     num_node: 1 # the number of machines you have
     node_index: 0 # no need to change
 
-
-
-
 model: "Dream-org/Dream-v0-Instruct-7B" # absolute path of your model
 model_base: "dream" # set dream for Dream and Diffu-coder models
 
 # dataset you want to eval on, you need to download first, you can also modify your own dataset, see instructions in ./data
 dataset:
-    eval_dataset: "LiveBench" #"MBPP""MATH500""GSM8K""AIME2024""LiveCodeBench""HumanEval""LiveBench"
-    data_type: "code" #"code""math"
+    eval_dataset: "MATH500" #"MBPP""MATH500""GSM8K""AIME2024""LiveCodeBench""HumanEval""LiveBench"
+    data_type: "math" #"code""math"
 
 execute:
     num_chunk: 128 # batch size of executing codes in coding eval tasks
