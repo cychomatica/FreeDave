@@ -4,6 +4,7 @@ from typing import List, Tuple
 import torch
 import torch.nn.functional as F
 from modeling.llada.modeling_llada import LLaDAModelLM
+from typing import Optional
 
 def add_gumbel_noise(logits, temperature):
     if temperature == 0:
@@ -246,11 +247,9 @@ def generate_with_prefix_cache_FreeDave(
         # first step denoising for draft token sampling
         mask_index_block = (cur_x == mask_id)
         mask_index_block[:, block_length:] = False
-        if use_cache:
-            logits = model(cur_x, past_key_values=past_key_values, use_cache=True).logits
-        else:
-            logits = model(x, use_cache=False).logits
-            logits = logits[:, current_block_start:]
+        x0, x0_p = sample_step(
+            model, cur_x, current_block_start, past_key_values, use_cache, temperature, strategy
+        )
         nfe += 1
 
         step = 1
@@ -261,9 +260,14 @@ def generate_with_prefix_cache_FreeDave(
                 break
 
             x_draft = token_filling(
-                cur_x, logits, step, cur_draft_steps,
-                cur_num_transfer, mask_index_block,
-                temperature, strategy, unmask_threshold
+                cur_x, 
+                x0, 
+                x0_p, 
+                [step], 
+                cur_draft_steps,
+                cur_num_transfer, 
+                mask_index_block,
+                unmask_threshold
             )
             
             if cur_denoising_steps - step > 1:
@@ -271,24 +275,29 @@ def generate_with_prefix_cache_FreeDave(
                     past_key_values = cache_batch_repeat_interleave(past_key_values, cur_draft_steps)
                 mask_index_draft = (x_draft == mask_id)
                 mask_index_draft[:, block_length:] = False
-                if use_cache:
-                    logits_draft = model(x_draft, past_key_values=past_key_values, use_cache=True).logits
-                else:
-                    logits_draft = model(x, use_cache=False).logits
-                    logits_draft = logits[:, current_block_start:]
+                x0_draft, x0_p_draft = sample_step(
+                    model, x_draft, current_block_start, past_key_values, use_cache, temperature, strategy
+                )
 
                 x_target = token_filling(
-                    x_draft, logits_draft, step+1, 1,
-                    cur_num_transfer.expand(x_draft.shape[0], *cur_num_transfer.shape[1:]), mask_index_draft,
-                    temperature, strategy, unmask_threshold
+                    x_draft, 
+                    x0, 
+                    x0_p, 
+                    [step + i + 1 for i in range(cur_draft_steps)], 
+                    1,
+                    cur_num_transfer.expand(x_draft.shape[0], *cur_num_transfer.shape[1:]), 
+                    mask_index_draft,
+                    unmask_threshold
                 )
                 
                 x_draft = x_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])
                 x_target = x_target.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])
                 matched_draft_index = (x_target[:, :-1, :] == x_draft[:, 1:, :]).all(dim=-1)
                 matched_steps = torch.cumprod(matched_draft_index, dim=-1).sum(dim=-1) #NOTE: assert matched_steps.shape[0] == 1 for now
+                matched_steps.zero_()
                 cur_x = x_draft[:, matched_steps, :].squeeze(1)
-                logits = logits_draft[matched_steps, ...]
+                x0 = x0_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
+                x0_p = x0_p_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
                 past_key_values = cache_batch_select_indices(past_key_values, matched_steps)
                 step += matched_steps.item() + 1
             else:
@@ -311,72 +320,98 @@ def generate_with_prefix_cache_FreeDave(
 
     return DiffusionOutput(sequences=x, history=histories, nfe=nfe)
 
+@torch.no_grad()
+def sample_tokens(logits, temperature, target="confidence"):
 
-# @ torch.no_grad()
-# def sample_step(model, x, s, use_cache, temperature, target):
+    logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
+    x0 = torch.argmax(logits_with_noise, dim=-1) # b, l
 
-#     # first full forward to build prefix cache
-#     if use_cache:
-#         out = model(x, use_cache=True)
-#         pkv = out.past_key_values
-#         # chop prefix out of past_kv to keep cache small
-#         new_pkv = tuple(
-#             tuple(t[:, :, :s] for t in layer) for layer in pkv
-#         )
-#         pkv = new_pkv
-#     else:
-#         out = model(x, use_cache=False)
+    if target == 'confidence':
+        p = F.softmax(logits.to(torch.float64), dim=-1)
+        x0_p = torch.squeeze(
+            torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
+    elif target == 'margin_confidence':
+        p = F.softmax(logits.to(torch.float64), dim=-1)
+        top2 = torch.topk(p, 2, dim=-1).values            # (b, l, 2)
+        x0_p = top2[..., 0] - top2[..., 1]                # Δ(top1, top2)
+    elif target == 'neg_entropy':
+        p = F.softmax(logits.to(torch.float64), dim=-1)
+        x0_p = -torch.sum(p * torch.log(p + 1e-10), dim=-1)  # –entropy
+    elif target == 'random':
+        x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
+    else:
+        raise NotImplementedError(target)
+    
+    return x0, x0_p
 
-#     logits = out.logits
-#     logits_with_noise = add_gumbel_noise(logits, temperature=temperature)
-#     x0 = torch.argmax(logits_with_noise, dim=-1) # b, l
+@torch.no_grad()
+def sample_step(
+    model, 
+    x, 
+    current_block_start, 
+    past_key_values,
+    use_cache, 
+    temperature, 
+    target):
 
-#     if target == 'confidence':
-#         p = F.softmax(logits.to(torch.float64), dim=-1)
-#         x0_p = torch.squeeze(
-#             torch.gather(p, dim=-1, index=torch.unsqueeze(x0, -1)), -1) # b, l
-#     elif target == 'margin_confidence':
-#         p = F.softmax(logits.to(torch.float64), dim=-1)
-#         top2 = torch.topk(p, 2, dim=-1).values            # (b, l, 2)
-#         x0_p = top2[..., 0] - top2[..., 1]                # Δ(top1, top2)
-#     elif target == 'neg_entropy':
-#         p = F.softmax(logits.to(torch.float64), dim=-1)
-#         x0_p = -torch.sum(p * torch.log(p + 1e-10), dim=-1)  # –entropy
-#     elif target == 'random':
-#         x0_p = torch.rand((x0.shape[0], x0.shape[1]), device=x0.device)
-#     else:
-#         raise NotImplementedError(target)
+    if use_cache:
+        logits = model(x, past_key_values=past_key_values, use_cache=True).logits
+    else:
+        logits = model(x, use_cache=False).logits
+        logits = logits[:, current_block_start:]
 
-#     return x0, x0_p
+    x0, x0_p = sample_tokens(logits, temperature, target)
+
+    return x0, x0_p
 
 @torch.no_grad()
 def token_filling(
-    x, 
-    logits, 
-    step, 
-    draft_steps, 
-    num_transfer_tokens, 
-    mask_index, 
-    temperature, 
-    strategy, 
-    unmask_threshold=None
+    x: torch.Tensor,
+    x0: torch.Tensor,
+    x0_p: torch.Tensor, 
+    step: Optional[torch.Tensor, List[int]], 
+    draft_steps: int, 
+    num_transfer_tokens: torch.Tensor, 
+    mask_index: torch.Tensor, 
+    unmask_threshold: Optional[float] = None
 ):
     x_draft = x.unsqueeze(1).expand(x.shape[0], draft_steps, *x.shape[1:]).clone()
-    x0 = torch.zeros_like(x_draft, dtype=x_draft.dtype)
-    transfer_index = torch.zeros_like(x_draft, dtype=torch.bool)
-
     
-    for k in range(draft_steps):
-        x0_, transfer_index_ = get_transfer_index(
-                                        logits, temperature, strategy,
-                                        mask_index, x, num_transfer_tokens[:, step: step+k+1].sum(dim=-1), unmask_threshold
-                                        )
-        x0[:, k, :] = x0_
-        transfer_index[:, k, :] = transfer_index_
+    if unmask_threshold is None:
+        confidence = torch.where(mask_index, x0_p, -torch.inf)
+        transfer_index = torch.zeros_like(x_draft, dtype=torch.bool)
+        for j in range(x_draft.shape[0]):
+            for k in range(draft_steps):
+                _, idx = torch.topk(confidence[j], num_transfer_tokens[j, step[j]: step[j] + k + 1].sum())
+                transfer_index[j, k, idx] = True
+    # else:
+    #     selected = mask_index & (x0_p >= unmask_threshold)  # (B, T)
 
-    x_draft[transfer_index] = x0[transfer_index]
+    #     has_mask = mask_index.any(dim=-1)               # (B,)
+    #     none_sel = (~selected.any(dim=-1)) & has_mask   # (B,)
+    #     if none_sel.any():
+    #         masked_scores = x0_p.masked_fill(~mask_index, float("-inf"))
+    #         best_idx = masked_scores.argmax(dim=-1)     # (B,)
+    #         rows = torch.nonzero(none_sel, as_tuple=False).squeeze(-1)
+    #         selected[rows, best_idx[rows]] = True
+
+    x_draft[transfer_index] = x0.unsqueeze(1).expand_as(x_draft)[transfer_index]
     x_draft = x_draft.view(x.shape[0] * draft_steps, *x.shape[1:]) # (batch * draft_steps, seq_len)
     return x_draft
+
+
+    #     return x0, selected
+
+    # return x0, transfer_index
+
+    
+    # for k in range(draft_steps):
+    #     x0_, transfer_index_ = get_transfer_index(
+    #                                     logits, temperature, strategy,
+    #                                     mask_index, x, num_transfer_tokens[:, step: step+k+1].sum(dim=-1), unmask_threshold
+    #                                     )
+    #     x0[:, k, :] = x0_
+    #     transfer_index[:, k, :] = transfer_index_
 
 @torch.no_grad()
 def cache_batch_repeat_interleave(past_key_values, n):

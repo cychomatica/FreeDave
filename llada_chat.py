@@ -71,7 +71,7 @@ if __name__ == '__main__':
             output = generate_with_prefix_cache(
                 model,
                 prompt_ids,
-                steps=config.rollout.steps, 
+                steps=config.rollout.steps,
                 gen_length=config.rollout.max_gen_length,
                 block_length=config.rollout.block_size, 
                 temperature=config.rollout.temperature,

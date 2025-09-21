@@ -1,9 +1,13 @@
-# adpated from SADR https://github.com/JetAstra/SDAR/blob/main/generate.py
+'''
+adpated from: 
+    https://github.com/Gen-Verse/dLLM-RL
+'''
 import torch
 import math
 from torch.nn import functional as F
 from transformers.cache_utils import DynamicCache
 from transformers import AutoModelForCausalLM, AutoTokenizer, GenerationConfig
+from typing import Optional, List, Union
 
 
 def top_k_logits(logits, k):
@@ -275,36 +279,71 @@ def block_diffusion_generate_FreeDave(
             
             # Draft token filling from last forward pass
             cur_draft_steps = min(draft_steps, denoising_steps - step)
-            if cur_draft_steps == 1:
-                cur_x = token_filling(cur_x, x0, x0_p, mask_id, remasking_strategy, confidence_threshold, num_transfer_tokens, step, cur_draft_steps)
-                break
+            # if cur_draft_steps == 1:
+            #     cur_x = token_filling(
+            #         cur_x, 
+            #         x0, 
+            #         x0_p, 
+            #         mask_id, 
+            #         remasking_strategy, 
+            #         confidence_threshold, 
+            #         num_transfer_tokens, 
+            #         [step], 
+            #         cur_draft_steps)
+            #     break
             
-            x_draft = token_filling(cur_x, x0, x0_p, mask_id, remasking_strategy, confidence_threshold, num_transfer_tokens, step, cur_draft_steps)
-            past_key_values.batch_repeat_interleave(x_draft.shape[0])
+            x_draft = token_filling(
+                cur_x, 
+                x0, 
+                x0_p, 
+                mask_id, 
+                remasking_strategy, 
+                confidence_threshold, 
+                num_transfer_tokens, 
+                [step], 
+                cur_draft_steps
+            )
 
-            # New forward pass
-            x0_draft, x0_p_draft = sample_step(model, x_draft.clone(), cur_attn_mask, cur_position_ids, past_key_values, temperature, top_k, top_p)
+            if denoising_steps - step > 1:
+                past_key_values.batch_repeat_interleave(x_draft.shape[0])
 
-            # Target token filling from new forward pass
-            x_target = token_filling(x_draft.clone(), x0_draft, x0_p_draft, mask_id, remasking_strategy, confidence_threshold, num_transfer_tokens, step+1, 1)
+                # New forward pass
+                x0_draft, x0_p_draft = sample_step(model, x_draft.clone(), cur_attn_mask, cur_position_ids, past_key_values, temperature, top_k, top_p)
 
-            # Draft tokens verification
-            x_draft = x_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:]) # [batch, cur_draft_steps, seq_len]
-            x_target = x_target.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:]) # [batch, cur_draft_steps, seq_len]
-            matched_draft_index = (x_target[:, :-1, :] == x_draft[:, 1:, :]).all(dim=-1)
-            matched_steps = torch.cumprod(matched_draft_index, dim=-1).sum(dim=-1) #NOTE: assert matched_steps.shape[0] == 1 for now
+                # Target token filling from new forward pass
+                x_target = token_filling(
+                    x_draft.clone(), 
+                    x0_draft, 
+                    x0_p_draft, 
+                    mask_id, 
+                    remasking_strategy, 
+                    confidence_threshold, 
+                    num_transfer_tokens, 
+                    [step + i + 1 for i in range(cur_draft_steps)], 
+                    1
+                )
 
-            # Update current x, current kv cache, and forward pass intermediate results
-            cur_x = x_draft[:, matched_steps, :].squeeze(1)
-            x0 = x0_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
-            x0_p = x0_p_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
-            past_key_values.batch_select_indices(matched_steps)
+                # Draft tokens verification
+                x_draft = x_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:]) # [batch, cur_draft_steps, seq_len]
+                x_target = x_target.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:]) # [batch, cur_draft_steps, seq_len]
+                matched_draft_index = (x_target[:, :-1, :] == x_draft[:, 1:, :]).all(dim=-1)
+                matched_steps = torch.cumprod(matched_draft_index, dim=-1).sum(dim=-1) #NOTE: assert matched_steps.shape[0] == 1 for now
 
-            # Update step
-            step += matched_steps + 1
+                # Update current x, current kv cache, and forward pass intermediate results
+                cur_x = x_draft[:, matched_steps, :].squeeze(1)
+                x0 = x0_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
+                x0_p = x0_p_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
+                past_key_values.batch_select_indices(matched_steps)
 
-        # Store kv cache
-        model(cur_x,
+                # Update step
+                step += matched_steps + 1
+            else:
+                cur_x = x_draft
+                step += 1
+
+        # Update kv cache
+        if num_block < num_blocks - 1:
+            model(cur_x,
                 attention_mask=cur_attn_mask,
                 position_ids=cur_position_ids,
                 past_key_values=past_key_values,
@@ -408,18 +447,51 @@ def block_diffusion_generate_FreeDave_v1(
                     cur_draft_steps = min(draft_steps, denoising_steps * cur_num_draft_blocks)
                 else:
                     cur_draft_steps = min(draft_steps, denoising_steps - step)
-                if cur_draft_steps == 1:
-                    cur_x = token_filling(cur_x, x0, x0_p, mask_id, remasking_strategy, confidence_threshold, cur_num_transfer_tokens, step, cur_draft_steps, block_priority_shift)
+
+                if step == denoising_steps - 1 and num_block == num_blocks - 1: # if last block and last step, exit
+                    cur_x = token_filling(
+                        cur_x, 
+                        x0, 
+                        x0_p, 
+                        mask_id, 
+                        remasking_strategy, 
+                        confidence_threshold, 
+                        cur_num_transfer_tokens, 
+                        [step], 
+                        cur_draft_steps, block_priority_shift
+                    )
                     break
                 
-                x_draft = token_filling(cur_x, x0, x0_p, mask_id, remasking_strategy, confidence_threshold, cur_num_transfer_tokens, step, cur_draft_steps, block_priority_shift)
+                x_draft = token_filling(
+                    cur_x, 
+                    x0, 
+                    x0_p, 
+                    mask_id, 
+                    remasking_strategy, 
+                    confidence_threshold, 
+                    cur_num_transfer_tokens, 
+                    [step], 
+                    cur_draft_steps, 
+                    block_priority_shift
+                )
+
+                # if denoising_steps - step > 1:
                 past_key_values.batch_repeat_interleave(x_draft.shape[0])
 
                 # New forward pass
                 x0_draft, x0_p_draft = sample_step(model, x_draft.clone(), cur_attn_mask, cur_position_ids, past_key_values, temperature, top_k, top_p)
 
                 # Target token filling from new forward pass
-                x_target = token_filling(x_draft.clone(), x0_draft, x0_p_draft, mask_id, remasking_strategy, confidence_threshold, cur_num_transfer_tokens, step+1, 1, block_priority_shift)
+                x_target = token_filling(
+                    x_draft.clone(), 
+                    x0_draft, 
+                    x0_p_draft, 
+                    mask_id, 
+                    remasking_strategy, 
+                    confidence_threshold, 
+                    cur_num_transfer_tokens, 
+                    [step + i + 1 for i in range(cur_draft_steps)], 1, block_priority_shift
+                )
 
                 # Draft tokens verification
                 x_draft = x_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:]) # [batch, cur_draft_steps, seq_len]
@@ -435,22 +507,25 @@ def block_diffusion_generate_FreeDave_v1(
                 
                 # Update step
                 step += matched_steps.item() + 1
-
+    
                 # NOTE: more aggressive matching (not ready yet)
+                # region
                 # matched_select_index = (x_target[:, :-1, :] == x_draft[:, 1:, :]).prod(dim=1).bool()
                 # cur_x[matched_select_index] = x_draft[:, -1, :][matched_select_index]
                 # x0[matched_select_index] = x0_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, -1, :][matched_select_index]
                 # x0_p[matched_select_index] = x0_p_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, -1, :][matched_select_index]
                 # past_key_values.batch_select_indices(torch.tensor([-1], device=x.device))
                 # step += matched_select_index.sum() + 1
+                # endregion
 
-        # Cache current block
-        model(cur_x[:, :block_length],
-                attention_mask=cur_attn_mask[:, :, :block_length, :prefill_length+block_length],
-                position_ids=cur_position_ids[:, :block_length],
-                past_key_values=past_key_values,
-                use_cache=True,
-                store_kv=True)
+        # Update kv cache
+        if num_block < num_blocks - 1: # if not the last block
+            model(cur_x[:, :block_length],
+                    attention_mask=cur_attn_mask[:, :, :block_length, :prefill_length+block_length],
+                    position_ids=cur_position_ids[:, :block_length],
+                    past_key_values=past_key_values,
+                    use_cache=True,
+                    store_kv=True)
 
         # Fill current block; update prefill_length and num_block
         x[:, prefill_length:prefill_length + (cur_num_draft_blocks+1) * block_length] = cur_x
@@ -491,7 +566,18 @@ def sample_step(model,
     return x0, x0_p
 
 @torch.no_grad()
-def token_filling(x, x0, x0_p, mask_id, remasking_strategy, confidence_threshold, num_transfer_tokens, step, draft_steps=1, block_priority_shift=None):
+def token_filling(
+    x: torch.Tensor, 
+    x0: torch.Tensor, 
+    x0_p: torch.Tensor, 
+    mask_id: int, 
+    remasking_strategy: str, 
+    confidence_threshold: float, 
+    num_transfer_tokens: torch.Tensor, 
+    step: Union[torch.Tensor, List[int]], 
+    draft_steps: int=1, 
+    block_priority_shift: Optional[torch.Tensor] = None
+):
 
     x_draft = x.unsqueeze(1).expand(x.shape[0], draft_steps, *x.shape[1:]).clone() # (batch, draft_steps, seq_len)
     mask_index = (x == mask_id)
@@ -517,7 +603,7 @@ def token_filling(x, x0, x0_p, mask_id, remasking_strategy, confidence_threshold
         transfer_index = torch.zeros_like(x_draft, dtype=torch.bool)
         for j in range(confidence.shape[0]):
             for k in range(draft_steps):
-                _, idx = torch.topk(confidence[j], num_transfer_tokens[step: step + k + 1].sum())
+                _, idx = torch.topk(confidence[j], num_transfer_tokens[step[j]: step[j] + k + 1].sum())
                 transfer_index[j, k, idx] = True
 
     #TODO: adaptation

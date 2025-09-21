@@ -1,5 +1,5 @@
 import torch
-from dream_generate import block_diffusion_generate, block_diffusion_generate_FreeDave, block_diffusion_generate_
+from dream_generate import block_diffusion_generate, block_diffusion_generate_FreeDave, block_diffusion_generate_batch
 import time
 from omegaconf import OmegaConf
 from modeling.dream.generation_utils_block import DreamGenerationConfig
@@ -106,36 +106,36 @@ if __name__ == '__main__':
         cprint(f'Normal generation: (time: {end_time - start_time} seconds; num of forward passes: {forward_counter.counter.count}; avg step forward time: {(end_time - start_time) / forward_counter.counter.count} seconds)', 'cyan')
         print('-'*66)
 
-        # Generate response
-        forward_counter.reset_count()
-        start_time = time.time()
-        with forward_counter.count_context():
-            output = block_diffusion_generate_(
-                model,
-                prompt_ids,
-                attention_mask=attention_mask,
-                generation_config=generation_config,
-                block_length=config.rollout.block_size,
-                use_cache=config.rollout.use_cache,
-                further_horizon=config.rollout.further_horizon,
-                mask_token_id = model.config.mask_token_id,
-                eos_token_id = model.config.eos_token_id,
-                pad_token_id = model.config.pad_token_id,
-                pad_target_penalty = config.rollout.pad_target_penalty,
-                unmask_threshold = unmask_threshold
-            )
-        end_time = time.time()
-        output.sequences = output.sequences.cpu()
-        torch.cuda.empty_cache()
+        # # Generate response
+        # forward_counter.reset_count()
+        # start_time = time.time()
+        # with forward_counter.count_context():
+        #     output = block_diffusion_generate_batch(
+        #         model,
+        #         prompt_ids,
+        #         attention_mask=attention_mask,
+        #         generation_config=generation_config,
+        #         block_length=config.rollout.block_size,
+        #         use_cache=config.rollout.use_cache,
+        #         further_horizon=config.rollout.further_horizon,
+        #         mask_token_id = model.config.mask_token_id,
+        #         eos_token_id = model.config.eos_token_id,
+        #         pad_token_id = model.config.pad_token_id,
+        #         pad_target_penalty = config.rollout.pad_target_penalty,
+        #         unmask_threshold = unmask_threshold
+        #     )
+        # end_time = time.time()
+        # output.sequences = output.sequences.cpu()
+        # torch.cuda.empty_cache()
 
-        # Process response
-        generation = tokenizer.decode(output.sequences[0][len(prompt_ids[0]):].tolist())
-        generation = generation.split(tokenizer.eos_token)[0].strip()
+        # # Process response
+        # generation = tokenizer.decode(output.sequences[0][len(prompt_ids[0]):].tolist())
+        # generation = generation.split(tokenizer.eos_token)[0].strip()
 
-        # Print response
-        print('Model:', generation)
-        cprint(f'Normal batch generation: (time: {end_time - start_time} seconds; num of forward passes: {forward_counter.counter.count}; avg step forward time: {(end_time - start_time) / forward_counter.counter.count} seconds)', 'cyan')
-        print('-'*66)
+        # # Print response
+        # print('Model:', generation)
+        # cprint(f'Normal batch generation: (time: {end_time - start_time} seconds; num of forward passes: {forward_counter.counter.count}; avg step forward time: {(end_time - start_time) / forward_counter.counter.count} seconds)', 'cyan')
+        # print('-'*66)
 
         # Generate response
         forward_counter.reset_count()

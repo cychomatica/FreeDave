@@ -26,7 +26,7 @@
             "console": "integratedTerminal",
             "args": [
                 "config=configs/dream_eval.yaml",
-                "rollout.draft_steps=2",
+                "rollout.draft_steps=4",
                 // "rollout.max_gen_length=256",
                 // "rollout.steps=256",
                 // "rollout.further_horizon=0",
@@ -61,7 +61,9 @@
             "program": "trado_eval.py",
             "console": "integratedTerminal",
             "args": [
-                "config=configs/trado_eval.yaml"
+                "config=configs/trado_eval.yaml",
+                "rollout.draft_steps=8",
+                "rollout.fast_sampling_version=v1"
             ],
             "env": {
                 "CUDA_VISIBLE_DEVICES": "7",

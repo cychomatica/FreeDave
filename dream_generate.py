@@ -7,6 +7,7 @@ from jinja2 import Template
 import torch
 from termcolor import cprint
 import torch.nn.functional as F
+from transformers.models.x_clip.modeling_x_clip import x_clip_loss
 
 from modeling.dream import DreamTokenizer
 from modeling.dream.modeling_dream import DreamModel
@@ -23,27 +24,47 @@ from torch.nn import functional as F
 import torch
 
 
-def top_p_logits(logits, top_p=None):
+# def top_p_logits(logits, top_p=None):
+#     sorted_logits, sorted_indices = torch.sort(logits, descending=True)
+#     cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+#     sorted_indices_to_remove = cumulative_probs > top_p
+#     # Shift the indices to the right to keep the first token above the threshold
+#     sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
+#     sorted_indices_to_remove[..., 0] = 0
+
+#     mask = torch.zeros_like(logits, dtype=torch.bool, device=logits.device)
+#     mask = mask.scatter_(-1, sorted_indices, sorted_indices_to_remove)
+#     logits = logits.masked_fill(mask, torch.finfo(logits.dtype).min)
+#     return logits
+
+# def top_k_logits(logits, top_k=None):
+#     top_k = min(top_k, logits.size(-1))  # Safety check
+#     # Remove all tokens with a probability less than the last token of the top-k
+#     indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
+#     logits = logits.masked_fill(indices_to_remove, torch.finfo(logits.dtype).min)
+#     return logits
+
+def top_k_logits(logits, k):
+    if k <= 0:
+        return logits
+    else:
+        values, _ = torch.topk(logits, k)
+        min_values = values[..., -1, None]
+        return torch.where(logits < min_values, torch.full_like(logits, float('-inf')), logits)
+
+
+def top_p_logits(logits, p):
     sorted_logits, sorted_indices = torch.sort(logits, descending=True)
     cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
-    sorted_indices_to_remove = cumulative_probs > top_p
-    # Shift the indices to the right to keep the first token above the threshold
-    sorted_indices_to_remove[..., 1:] = sorted_indices_to_remove[..., :-1].clone()
-    sorted_indices_to_remove[..., 0] = 0
-
-    mask = torch.zeros_like(logits, dtype=torch.bool, device=logits.device)
-    mask = mask.scatter_(-1, sorted_indices, sorted_indices_to_remove)
-    logits = logits.masked_fill(mask, torch.finfo(logits.dtype).min)
+    sorted_mask = cumulative_probs > p
+    sorted_mask[..., 1:] = sorted_mask[..., :-1].clone()
+    sorted_mask[..., 0] = False
+    mask_indices = torch.scatter(torch.full_like(logits, False, dtype=torch.bool),
+                                 -1, sorted_indices, sorted_mask)
+    logits = logits.masked_fill(mask_indices, float('-inf'))
     return logits
 
-def top_k_logits(logits, top_k=None):
-    top_k = min(top_k, logits.size(-1))  # Safety check
-    # Remove all tokens with a probability less than the last token of the top-k
-    indices_to_remove = logits < torch.topk(logits, top_k)[0][..., -1, None]
-    logits = logits.masked_fill(indices_to_remove, torch.finfo(logits.dtype).min)
-    return logits
-
-def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, tar=None):
+def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, target=None):
 
     logits = logits.float()
 
@@ -63,10 +84,10 @@ def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, tar=None):
     else:
         target, x0 = probs.max(dim=-1)
     
-    if tar == "confidence":
+    if target == "confidence":
         return target, x0
     
-    if tar == "margin_confidence":
+    if target == "margin_confidence":
         sorted_probs, _ = torch.sort(probs, dim=-1, descending=True)
         # Extract top1 and top2 probabilities
         top1_probs = sorted_probs[:, 0]
@@ -75,7 +96,7 @@ def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, tar=None):
         # Calculate confidence as top1 - top2
         target = top1_probs - top2_probs 
     
-    if tar == "neg_entropy":
+    if target == "neg_entropy":
         epsilon = 1e-10
         log_probs = torch.log(probs + epsilon)
         target = torch.sum(probs * log_probs, dim=-1)
@@ -105,7 +126,6 @@ def block_diffusion_generate(
     unmask_threshold: Optional[float] = 0.9
 ) -> Union[DreamModelOutput, torch.LongTensor]:
     # init values
-    
     output_history = generation_config.output_history
     return_dict_in_generate = generation_config.return_dict_in_generate
     gen_length = generation_config.max_gen_length
@@ -116,8 +136,6 @@ def block_diffusion_generate(
     tar = generation_config.tar
     alg_temp = generation_config.alg_temp
     cgws = further_horizon
-
-
     histories = [] if (return_dict_in_generate and output_history) else None
 
     # pad input_ids to max_length
@@ -194,12 +212,10 @@ def block_diffusion_generate(
         i = 1
         while True:
             
-            
             if cgws is not None:
                 mask_index = (x[:, window_slice] == mask_token_id)
             else:
                 mask_index = (x[:, current_block_start:] == mask_token_id)
-            
             
             # Prepare attention mask for cached generation
             if attention_mask != "full":
@@ -231,10 +247,9 @@ def block_diffusion_generate(
             if (x[:, current_block_start:current_block_end] == mask_token_id).sum() == 0:
                 break
             
-            
             mask_index[:, block_length:] = False
             mask_logits = logits[mask_index]
-            target, x0 = sample_tokens(mask_logits, temperature, top_p=top_p, top_k=top_k, tar=tar)
+            target, x0 = sample_tokens(mask_logits, temperature, top_p=top_p, top_k=top_k, target=tar)
 
             # —— pad token penalty ——
             _pad_target_divisor = pad_target_penalty
@@ -280,8 +295,6 @@ def block_diffusion_generate(
                     else:
                         x[:, current_block_start:][row_indices,transfer_index] = x_[row_indices,transfer_index]
                     
-                
-                    
             else:
                 if cgws is not None:
                     xwin = x[:, window_slice]
@@ -305,8 +318,6 @@ def block_diffusion_generate(
 
                 xwin[selected_map] = x_candidates[selected_map]
 
-                
-            
             if histories is not None:
                 histories.append(x.clone().cpu())
 
@@ -324,7 +335,6 @@ def block_diffusion_generate(
         #     if histories is not None:
         #         histories.append(x.clone().cpu())
         #     break
-
     
     if return_dict_in_generate:
         return DreamModelOutput(
@@ -336,7 +346,7 @@ def block_diffusion_generate(
 
 
 @torch.no_grad()
-def block_diffusion_generate_(
+def block_diffusion_generate_batch(
     model,
     input_ids: torch.LongTensor,
     attention_mask: Optional[torch.LongTensor],
@@ -351,7 +361,6 @@ def block_diffusion_generate_(
     unmask_threshold: Optional[float] = 0.9
 ) -> Union[DreamModelOutput, torch.LongTensor]:
     # init values
-    
     output_history = generation_config.output_history
     return_dict_in_generate = generation_config.return_dict_in_generate
     gen_length = generation_config.max_gen_length
@@ -363,8 +372,6 @@ def block_diffusion_generate_(
     tar = generation_config.tar
     alg_temp = generation_config.alg_temp
     cgws = further_horizon
-
-
     histories = [] if (return_dict_in_generate and output_history) else None
 
     # pad input_ids to max_length
@@ -412,7 +419,7 @@ def block_diffusion_generate_(
 
         # update cache
         if use_cache:
-            model_output = model(x.repeat(draft_steps,1), attention_mask, tok_idx, use_cache=True)
+            model_output = model(x.repeat(draft_steps, 1), attention_mask, tok_idx, use_cache=True)
             past_key_values = model_output.past_key_values
             # Extract only previous block cache
             new_past_key_values = []
@@ -423,7 +430,7 @@ def block_diffusion_generate_(
             past_key_values = new_past_key_values
 
         else:
-            model_output = model(x.repeat(draft_steps,1), attention_mask, tok_idx, use_cache=False)
+            model_output = model(x.repeat(draft_steps, 1), attention_mask, tok_idx, use_cache=False)
         
         logits = model_output.logits[:1, ...]
         logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
@@ -435,10 +442,10 @@ def block_diffusion_generate_(
         if cgws is not None:
             window_end  = max_length if cgws is None else min(current_block_end + cgws, max_length)
             window_slice = slice(current_block_start, window_end)
-            cur_x = x[:, window_slice].clone()
+            cur_x = x[:, window_slice]#.clone()
             cur_tok_idx = tok_idx[:, window_slice] if tok_idx is not None else None
         else:
-            cur_x = x[:, current_block_start:].clone()
+            cur_x = x[:, current_block_start:]#.clone()
             cur_tok_idx = tok_idx[:, current_block_start:] if tok_idx is not None else None
         
         # Prepare attention mask for cached generation
@@ -455,13 +462,12 @@ def block_diffusion_generate_(
         step = 1
         while True:
             
-            
             mask_index = (cur_x == mask_token_id)
             mask_index[:, block_length:] = False
 
             x0, x0_p = sample_step(
                 model, 
-                cur_x.repeat(draft_steps,1), 
+                cur_x.repeat(draft_steps, 1), 
                 current_block_start, current_attention_mask, cur_tok_idx, mask_index,
                 past_key_values, use_cache,
                 temperature, top_p, top_k, tar,
@@ -474,7 +480,7 @@ def block_diffusion_generate_(
 
             cur_x = token_filling(
                     cur_x, x0, x0_p,
-                    step, denoising_steps, 1, timesteps[num_block],
+                    [step], denoising_steps, 1, timesteps[num_block],
                     pad_token_id, pad_target_penalty,
                     mask_index, unmask_threshold,
                     block_length,
@@ -504,7 +510,6 @@ def block_diffusion_generate_(
         #         histories.append(x.clone().cpu())
         #     break
 
-    
     if return_dict_in_generate:
         return DreamModelOutput(
             sequences=x,
@@ -512,7 +517,6 @@ def block_diffusion_generate_(
         )
     else:
         return x
-
 
 @torch.no_grad()
 def block_diffusion_generate_FreeDave(
@@ -530,7 +534,6 @@ def block_diffusion_generate_FreeDave(
     unmask_threshold: Optional[float] = 0.9
 ) -> Union[DreamModelOutput, torch.LongTensor]:
     # init values
-    
     output_history = generation_config.output_history
     return_dict_in_generate = generation_config.return_dict_in_generate
     gen_length = generation_config.max_gen_length
@@ -542,8 +545,236 @@ def block_diffusion_generate_FreeDave(
     tar = generation_config.tar
     alg_temp = generation_config.alg_temp
     cgws = further_horizon
+    histories = [] if (return_dict_in_generate and output_history) else None
+
+    # pad input_ids to max_length
+    x = F.pad(input_ids, (0, gen_length), value=mask_token_id)
+    max_length = gen_length + input_ids.shape[1]
+    
+    # Handle block configuration
+    if block_length is None:
+        block_length = gen_length  # Default: single block (original behavior)
+    
+    assert gen_length % block_length == 0, f"gen_length ({gen_length}) must be divisible by block_length ({block_length})"
+    num_blocks = gen_length // block_length
+    
+    base, rem = divmod(steps, num_blocks)
+    steps_per_block = [base + (1 if i < rem else 0) for i in range(num_blocks)]
+    timesteps = [
+        torch.linspace(1, generation_config.eps, spb + 1, device=x.device)
+        for spb in steps_per_block
+    ]
+
+    if attention_mask is not None and torch.any(attention_mask == 0.0):
+        # we do not mask the [MASK] tokens so value = 1.0
+        attention_mask = F.pad(attention_mask, (0, max_length - attention_mask.shape[1]), value=1.0)
+        tok_idx = attention_mask.long().cumsum(-1) - 1
+        tok_idx.masked_fill_(attention_mask == 0, 1)
+        # attention_mask is of shape [B, N]; broadcast to [B, 1, N, N]
+        attention_mask = torch.logical_and(
+            attention_mask.unsqueeze(1).unsqueeze(-2),
+            attention_mask.unsqueeze(1).unsqueeze(-1),
+        )
+        attention_mask = torch.where(attention_mask, torch.tensor(0.0, device=attention_mask.device), torch.tensor(float("-inf"), device=attention_mask.device))
+    else:
+        tok_idx = None
+        attention_mask = "full"
+
+    # # Initialize cache for the prompt
+    past_key_values = None
+
+    # Process each block
+    for num_block in range(num_blocks):
+        
+        current_block_start = input_ids.shape[1] + num_block * block_length
+        current_block_end = current_block_start + block_length
+
+        # update cache
+        if use_cache:
+            model_output = model(x, attention_mask, tok_idx, use_cache=True)
+            past_key_values = model_output.past_key_values
+            # Extract only previous block cache
+            new_past_key_values = []
+            for step in range(len(past_key_values)):
+                new_past_key_values.append(())
+                for j in range(len(past_key_values[step])):
+                    new_past_key_values[step] += (past_key_values[step][j][:, :current_block_start, :],)
+            past_key_values = new_past_key_values
+
+        else:
+            model_output = model(x, attention_mask, tok_idx, use_cache=False)
+
+        logits = model_output.logits
+        logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
+        x0_p, x0 = sample_tokens(logits, temperature=temperature, top_p=top_p, top_k=top_k)
+        x[:, current_block_start] = x0[:, current_block_start]
+        if histories is not None:
+            histories.append(x.clone().cpu())
+
+        if use_cache:
+            if cgws is not None:
+                window_end  = max_length if cgws is None else min(current_block_end + cgws, max_length)
+                window_slice = slice(current_block_start, window_end)
+                cur_x = x[:, window_slice]#.clone()
+                cur_tok_idx = tok_idx[:, window_slice] if tok_idx is not None else None
+                # x0 = x0[:, window_slice]
+                # x0_p = x0_p[:, window_slice]
+            else:
+                cur_x = x[:, current_block_start:]#.clone()
+                cur_tok_idx = tok_idx[:, current_block_start:] if tok_idx is not None else None
+                # x0 = x0[:, current_block_start:]
+                # x0_p = x0_p[:, current_block_start:]
+        else:
+            cur_x = x
+            cur_tok_idx = tok_idx
+
+        # Prepare attention mask for cached generation
+        if attention_mask != "full" and use_cache:
+            # Adjust attention mask for current position
+            if cgws is not None:
+                current_attention_mask = attention_mask[:, :, window_slice, :window_end]
+            else:
+                current_attention_mask = attention_mask[:, :, current_block_start:, :]
+        else:
+            current_attention_mask = attention_mask
+        
+        mask_index = (cur_x == mask_token_id)
+        mask_index[:, block_length:] = False
+        x0, x0_p = sample_step(
+            model, 
+            cur_x, 
+            current_block_start, current_attention_mask, cur_tok_idx, mask_index,
+            past_key_values, use_cache,
+            temperature, top_p, top_k, tar,
+        )
+
+        denoising_steps = steps_per_block[num_block]
+        step = 1
+        while step < denoising_steps:
+
+            cur_draft_steps = min(draft_steps, denoising_steps - step)
+
+            if (cur_x[:, :block_length] == mask_token_id).sum() == 0:
+                break
+
+            x_draft = token_filling(
+                cur_x, 
+                x0, 
+                x0_p,
+                [step], 
+                denoising_steps, 
+                cur_draft_steps, 
+                timesteps[num_block],
+                pad_token_id, 
+                pad_target_penalty,
+                mask_index, 
+                unmask_threshold,
+                block_length,
+                alg_temp,
+            )
+
+            if denoising_steps - step > 1:
+                if use_cache:
+                    past_key_values = cache_batch_repeat_interleave(past_key_values, cur_draft_steps)
+
+                mask_index_draft = (x_draft == mask_token_id)
+                mask_index_draft[:, block_length:] = False
+                x0_draft, x0_p_draft = sample_step(
+                    model, 
+                    x_draft, 
+                    current_block_start, 
+                    current_attention_mask, 
+                    cur_tok_idx, 
+                    mask_index_draft,
+                    past_key_values, 
+                    use_cache,
+                    temperature, 
+                    top_p, 
+                    top_k, 
+                    tar,
+                )
+
+                x_target = token_filling(
+                    x_draft, 
+                    x0_draft, 
+                    x0_p_draft,
+                    [step + i + 1 for i in range(cur_draft_steps)], 
+                    denoising_steps, 
+                    1, 
+                    timesteps[num_block],
+                    pad_token_id, 
+                    pad_target_penalty,
+                    mask_index_draft, 
+                    unmask_threshold,
+                    block_length,
+                    alg_temp,
+                )
+                
+                x_draft = x_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])
+                x_target = x_target.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])
+                matched_draft_index = (x_target[:, :-1, :] == x_draft[:, 1:, :]).all(dim=-1)
+                matched_steps = torch.cumprod(matched_draft_index, dim=-1).sum(dim=-1) #NOTE: assert matched_steps.shape[0] == 1 for now
+                # matched_steps = torch.tensor([0], device=cur_x.device) #NOTE: debug
+                cur_x = x_draft[:, matched_steps, :].squeeze(1)
+                x0 = x0_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
+                x0_p = x0_p_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
+                past_key_values = cache_batch_select_indices(past_key_values, matched_steps)
+
+                step += matched_steps.item() + 1
+            else:
+                cur_x = x_draft
+                step += 1
+            
+            if cgws is not None:
+                x[:, window_slice] = cur_x
+            else:
+                x[:, current_block_start:] = cur_x
+
+            if histories is not None:
+                histories.append(x.clone().cpu())
+
+            mask_index = (cur_x == mask_token_id)
+            mask_index[:, block_length:] = False
+            
+            if (cur_x[:, :block_length] == mask_token_id).sum() == 0:
+                break
+
+    if return_dict_in_generate:
+        return DreamModelOutput(
+            sequences=x,
+            history=histories,
+        )
+    else:
+        return x
 
 
+@torch.no_grad()
+def block_diffusion_generate_FreeDave_(
+    model,
+    input_ids: torch.LongTensor,
+    attention_mask: Optional[torch.LongTensor],
+    generation_config: DreamGenerationConfig,
+    block_length: Optional[int] = 32,
+    use_cache: bool = False,
+    further_horizon: int = 128,
+    mask_token_id: int = 151666,
+    eos_token_id: int = 151645,
+    pad_token_id: int = 151643,
+    pad_target_penalty: float = 1.0,
+    unmask_threshold: Optional[float] = 0.9
+) -> Union[DreamModelOutput, torch.LongTensor]:
+    # init values
+    output_history = generation_config.output_history
+    return_dict_in_generate = generation_config.return_dict_in_generate
+    gen_length = generation_config.max_gen_length
+    steps = generation_config.steps
+    draft_steps = generation_config.draft_steps
+    temperature = generation_config.temperature
+    top_p = generation_config.top_p
+    top_k = generation_config.top_k
+    tar = generation_config.tar
+    alg_temp = generation_config.alg_temp
+    cgws = further_horizon
     histories = [] if (return_dict_in_generate and output_history) else None
 
     # pad input_ids to max_length
@@ -613,10 +844,10 @@ def block_diffusion_generate_FreeDave(
         if cgws is not None:
             window_end  = max_length if cgws is None else min(current_block_end + cgws, max_length)
             window_slice = slice(current_block_start, window_end)
-            cur_x = x[:, window_slice].clone()
+            cur_x = x[:, window_slice]#.clone()
             cur_tok_idx = tok_idx[:, window_slice] if tok_idx is not None else None
         else:
-            cur_x = x[:, current_block_start:].clone()
+            cur_x = x[:, current_block_start:]#.clone()
             cur_tok_idx = tok_idx[:, current_block_start:] if tok_idx is not None else None
 
         # Prepare attention mask for cached generation
@@ -644,17 +875,6 @@ def block_diffusion_generate_FreeDave(
         while step < denoising_steps:
 
             cur_draft_steps = min(draft_steps, denoising_steps - step)
-            # if cur_draft_steps == 1:
-            # if denoising_steps - step == 1:
-            #     cur_x = token_filling(
-            #         cur_x, x0, x0_p,
-            #         step, denoising_steps, cur_draft_steps, timesteps[num_block],
-            #         pad_token_id, pad_target_penalty,
-            #         mask_index, unmask_threshold,
-            #         block_length,
-            #         alg_temp,
-            #     )
-            #     break
 
             if (cur_x[:, :block_length] == mask_token_id).sum() == 0:
                 break
@@ -693,9 +913,10 @@ def block_diffusion_generate_FreeDave(
                 
                 x_draft = x_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])
                 x_target = x_target.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])
-                matched_draft_index = (x_target[:, :-1, :] == x_draft[:, 1:, :]).all(dim=-1)
-                matched_steps = torch.cumprod(matched_draft_index, dim=-1).sum(dim=-1) #NOTE: assert matched_steps.shape[0] == 1 for now
-                matched_steps.zero_() #NOTE: debug
+                # matched_draft_index = (x_target[:, :-1, :] == x_draft[:, 1:, :]).all(dim=-1)
+                # matched_steps = torch.cumprod(matched_draft_index, dim=-1).sum(dim=-1) #NOTE: assert matched_steps.shape[0] == 1 for now
+                # matched_steps.zero_() #NOTE: debug
+                matched_steps = torch.tensor([0], device=cur_x.device)
                 cur_x = x_draft[:, matched_steps, :].squeeze(1)
                 x0 = x0_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
                 x0_p = x0_p_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
@@ -705,7 +926,6 @@ def block_diffusion_generate_FreeDave(
             else:
                 cur_x = x_draft
                 step += 1
-
             
             if cgws is not None:
                 x[:, window_slice] = cur_x
@@ -721,22 +941,9 @@ def block_diffusion_generate_FreeDave(
             if (cur_x[:, :block_length] == mask_token_id).sum() == 0:
                 break
 
-
-        # # update cache
-        # if use_cache:
-        #     model_output = model(x, attention_mask, tok_idx, use_cache=True)
-        #     past_key_values = model_output.past_key_values
-        #     # Extract only previous block cache
-        #     new_past_key_values = []
-        #     for step in range(len(past_key_values)):
-        #         new_past_key_values.append(())
-        #         for j in range(len(past_key_values[step])):
-        #             new_past_key_values[step] += (past_key_values[step][j][:, :current_block_start, :],)
-        #     past_key_values = new_past_key_values
-
-        block_all_pad = torch.all(
-            x[:, current_block_start:current_block_end] == pad_token_id
-        )
+        # block_all_pad = torch.all(
+        #     x[:, current_block_start:current_block_end] == pad_token_id
+        # )
         # if block_all_pad:
         #     if current_block_end < x.size(1):
         #         x[:, current_block_end:] = pad_token_id
@@ -756,13 +963,19 @@ def block_diffusion_generate_FreeDave(
 def sample_step(
     model,
     x,
-    current_block_start, current_attention_mask, cur_tok_idx, mask_index,
-    past_key_values, use_cache,
-    temperature, top_p, top_k, tar,
+    current_block_start, 
+    current_attention_mask, 
+    cur_tok_idx, 
+    mask_index,
+    past_key_values, 
+    use_cache,
+    temperature, 
+    top_p, 
+    top_k, 
+    target
 ):
     if use_cache:
-        model_output = model(x, current_attention_mask, cur_tok_idx, 
-                            past_key_values=past_key_values, use_cache=True)
+        model_output = model(x, current_attention_mask, cur_tok_idx, past_key_values=past_key_values, use_cache=True)
         logits = model_output.logits
         logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
     else:
@@ -772,21 +985,28 @@ def sample_step(
         logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
 
     # mask_logits = logits[mask_index]
-    x0_p, x0 = sample_tokens(logits, temperature, top_p=top_p, top_k=top_k, tar=tar)
+    x0_p, x0 = sample_tokens(logits, temperature, top_p=top_p, top_k=top_k, target=target)
 
     return x0, x0_p
 
 @torch.no_grad()
 def token_filling(
-    x, x0, x0_p,
-    step, denoising_steps, draft_steps, timesteps,
-    pad_token_id, pad_target_penalty,
-    mask_index, unmask_threshold,
+    x: torch.Tensor, 
+    x0: torch.Tensor, 
+    x0_p: torch.Tensor,
+    step: Optional[torch.Tensor, List[int]], 
+    denoising_steps: int, 
+    draft_steps: int, 
+    timesteps,
+    pad_token_id, 
+    pad_target_penalty,
+    mask_index, 
+    unmask_threshold,
     block_length,
     alg_temp,
 ):
 
-    x_draft = x.unsqueeze(1).expand(x.shape[0], draft_steps, *x.shape[1:]).clone()
+    x_draft = x.unsqueeze(1).expand(x.shape[0], draft_steps, *x.shape[1:]).clone() # (batch, draft_steps, seq_len)
 
     # —— pad token penalty ——
     _pad_target_divisor = pad_target_penalty
@@ -808,9 +1028,12 @@ def token_filling(
         for j in range(x_draft.shape[0]):
             for k in range(draft_steps):
                 
-                t = timesteps[step + k]
-                s = timesteps[step + k + 1]
-                number_transfer_tokens = int(num_mask_token[j] * (1 - s / t)) if step < denoising_steps - 1 else int(num_mask_token[j])
+                if step[j] < denoising_steps - 1:
+                    t = timesteps[step[j] + k]
+                    s = timesteps[step[j] + k + 1]
+                    number_transfer_tokens = int(num_mask_token[j] * (1 - s / t))
+                else:
+                    number_transfer_tokens = int(num_mask_token[j])
                 
                 if number_transfer_tokens > 0:
                     if alg_temp is None or alg_temp == 0:
@@ -823,7 +1046,7 @@ def token_filling(
                     confidence[j, idx] = -torch.inf
                     transfer_index[j, k:, idx] = True
                     
-    # TODO         
+    # TODO: support dynamic unmasking         
     # else:
     #     selected_map = torch.zeros_like(x, dtype=torch.bool)
     #     selected_map[mask_index] = (x0_p >= unmask_threshold)
@@ -863,7 +1086,7 @@ def cache_batch_repeat_interleave(past_key_values, n):
     for i in range(len(past_key_values)):
         new_past_key_values.append(())
         for j in range(len(past_key_values[i])):
-            new_past_key_values[i] += (past_key_values[i][j].repeat(n, 1, 1),)
+            new_past_key_values[i] += (past_key_values[i][j].expand(n, *past_key_values[i][j].shape[1:]),)
     return new_past_key_values
 
 @torch.no_grad()
