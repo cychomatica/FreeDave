@@ -212,13 +212,16 @@ def generate_with_prefix_cache_FreeDave(
         current_block_start = input_ids.shape[1] + num_block * block_length
         current_block_end = current_block_start + block_length
 
-        if cgws is not None:
-            window_end  = max_length if cgws is None else min(current_block_end + cgws, max_length)
-            window_slice = slice(current_block_start, window_end)
-            cur_x = x[:, window_slice].clone()
+        if use_cache:
+            if cgws is not None:
+                window_end  = max_length if cgws is None else min(current_block_end + cgws, max_length)
+                window_slice = slice(current_block_start, window_end)
+                cur_x = x[:, window_slice]
+            else:
+                cur_x = x[:, current_block_start:]
         else:
-            cur_x = x[:, current_block_start:].clone()
-        
+            cur_x = x
+
         cur_denoising_steps = steps_per_block[num_block]
         cur_num_transfer = get_num_transfer_tokens((x[:, current_block_start:current_block_end] == mask_id), cur_denoising_steps)
 
@@ -281,8 +284,8 @@ def generate_with_prefix_cache_FreeDave(
 
                 x_target = token_filling(
                     x_draft, 
-                    x0, 
-                    x0_p, 
+                    x0_draft, 
+                    x0_p_draft, 
                     [step + i + 1 for i in range(cur_draft_steps)], 
                     1,
                     cur_num_transfer.expand(x_draft.shape[0], *cur_num_transfer.shape[1:]), 
@@ -294,7 +297,7 @@ def generate_with_prefix_cache_FreeDave(
                 x_target = x_target.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])
                 matched_draft_index = (x_target[:, :-1, :] == x_draft[:, 1:, :]).all(dim=-1)
                 matched_steps = torch.cumprod(matched_draft_index, dim=-1).sum(dim=-1) #NOTE: assert matched_steps.shape[0] == 1 for now
-                matched_steps.zero_()
+                # matched_steps.zero_() # debug
                 cur_x = x_draft[:, matched_steps, :].squeeze(1)
                 x0 = x0_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
                 x0_p = x0_p_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)

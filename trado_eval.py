@@ -29,8 +29,8 @@ if __name__ == '__main__':
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     nfe_counter = ForwardHookCounter(model)
     
-    if config.rollout.draft_steps > 1:
-        if config.rollout.fast_sampling_version == 'v1':
+    if config.rollout.draft_steps > 1 and config.rollout.fast_sampling_version != 'NA':
+        if config.rollout.fast_sampling_version == 'v1' or config.rollout.draft_steps > config.rollout.denoising_steps_per_block:
             generate_func = partial(block_diffusion_generate_FreeDave_v1, 
                                     model=model,
                                     mask_id=151669,
@@ -44,7 +44,7 @@ if __name__ == '__main__':
                                     remasking_strategy=config.rollout.remasking_strategy,
                                     confidence_threshold=config.rollout.dynamic_threshold,
                                     )
-            cprint(f'Evaluating {os.path.basename(model_path)} on {dataset}.\nUsing fast sampling (v1) with draft steps={config.rollout.draft_steps}', color='green')
+            cprint(f'Evaluating {os.path.basename(model_path)} on {dataset}.\nUsing FreeDave++ ({config.rollout.remasking_strategy}) with draft steps={config.rollout.draft_steps}', color='green')
         else:
             generate_func = partial(block_diffusion_generate_FreeDave, 
                                     model=model,
@@ -59,7 +59,7 @@ if __name__ == '__main__':
                                     remasking_strategy=config.rollout.remasking_strategy,
                                     confidence_threshold=config.rollout.dynamic_threshold,
                                     )
-            cprint(f'Evaluating {os.path.basename(model_path)} on {dataset}.\nUsing fast sampling (v0) with draft steps={config.rollout.draft_steps}', color='green')
+            cprint(f'Evaluating {os.path.basename(model_path)} on {dataset}.\nUsing FreeDave ({config.rollout.remasking_strategy}) with draft steps={config.rollout.draft_steps}', color='green')
     else:
         generate_func = partial(block_diffusion_generate, 
                                 model=model,
@@ -73,7 +73,7 @@ if __name__ == '__main__':
                                 remasking_strategy=config.rollout.remasking_strategy,
                                 confidence_threshold=config.rollout.dynamic_threshold,
                                 )
-        cprint(f'Evaluating {os.path.basename(model_path)} on {dataset}.\nUsing normal sampling', color='green')
+        cprint(f'Evaluating {os.path.basename(model_path)} on {dataset}.\nUsing normal sampling ({config.rollout.remasking_strategy})', color='green')
 
     total_sampling_time = 0
     total_response_tokens = 0

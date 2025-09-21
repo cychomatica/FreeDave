@@ -33,8 +33,8 @@ while True:
             mask_id=151669,
             gen_length=256,
             block_length=4, denoising_steps=4,
-            temperature=1.0, top_k=1, top_p=1.0,
-            remasking_strategy="low_confidence_static",
+            temperature=1.0, top_k=0, top_p=1.0,
+            remasking_strategy="low_confidence_dynamic",
             confidence_threshold=0.9
         )
     end_time = time.time()

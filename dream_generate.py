@@ -500,15 +500,15 @@ def block_diffusion_generate_batch(
             if (cur_x[:, :block_length] == mask_token_id).sum() == 0:
                 break
         
-        # block_all_pad = torch.all(
-        #     x[:, current_block_start:current_block_end] == pad_token_id
-        # )
-        # if block_all_pad:
-        #     if current_block_end < x.size(1):
-        #         x[:, current_block_end:] = pad_token_id
-        #     if histories is not None:
-        #         histories.append(x.clone().cpu())
-        #     break
+        block_all_pad = torch.all(
+            x[:, current_block_start:current_block_end] == pad_token_id
+        )
+        if block_all_pad:
+            if current_block_end < x.size(1):
+                x[:, current_block_end:] = pad_token_id
+            if histories is not None:
+                histories.append(x.clone().cpu())
+            break
 
     if return_dict_in_generate:
         return DreamModelOutput(
@@ -738,6 +738,16 @@ def block_diffusion_generate_FreeDave(
             
             if (cur_x[:, :block_length] == mask_token_id).sum() == 0:
                 break
+
+        block_all_pad = torch.all(
+            x[:, current_block_start:current_block_end] == pad_token_id
+        )
+        if block_all_pad:
+            if current_block_end < x.size(1):
+                x[:, current_block_end:] = pad_token_id
+            if histories is not None:
+                histories.append(x.clone().cpu())
+            break
 
     if return_dict_in_generate:
         return DreamModelOutput(

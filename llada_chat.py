@@ -93,6 +93,8 @@ if __name__ == '__main__':
         print('Model:', generation)
         cprint(f'Normal generation: (time: {end_time - start_time} seconds; num of forward passes: {forward_counter.counter.count}; avg step forward time: {(end_time - start_time) / forward_counter.counter.count} seconds)', 'cyan')
         print('-'*66)
+        messages.append({'role': 'assistant', 'content': generation})
+
 
         # Generate response
         forward_counter.reset_count()
@@ -125,7 +127,7 @@ if __name__ == '__main__':
         print('-'*66)
 
         # Add model response to conversation history
-        messages.append({'role': 'assistant', 'content': generation})
+        # messages.append({'role': 'assistant', 'content': generation})
 
 
 '''An example conversation (maybe different due to randomness)

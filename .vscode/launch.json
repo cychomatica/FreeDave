@@ -72,14 +72,18 @@
             "cwd": "${workspaceFolder}"
         },
         {
-            "name": "chat",
+            "name": "debug trado_chat",
             "type": "debugpy",
             "request": "launch",
-            "program": "multiturn_chat_demo.py",
+            "program": "trado_chat.py",
             "console": "integratedTerminal",
-            // "args": [
-            //     "config=configs/trado_eval.yaml"
-            // ],
+            "args": [
+                "config=configs/trado_chat.yaml",
+                "rollout.remasking_strategy=low_confidence_dynamic",
+                "rollout.top_k=0",
+                "rollout.draft_steps=1",
+                "rollout.fast_sampling_version=NA",
+            ],
             "env": {
                 "CUDA_VISIBLE_DEVICES": "7",
                 "PYTHONPATH": "${workspaceFolder}"

@@ -421,15 +421,15 @@ def block_diffusion_generate_FreeDave_v1(
     for num_block in range(prefill_blocks, num_blocks):
 
         # NOTE: assume block_length == denoising_steps for now
-        cur_num_draft_blocks = min(math.ceil(draft_steps / denoising_steps), num_blocks - num_block - 1)
-        cur_num_transfer_tokens = num_transfer_tokens.repeat(cur_num_draft_blocks+1)
+        cur_future_num_blocks = min(math.ceil(draft_steps / denoising_steps), num_blocks - num_block - 1)
+        cur_num_transfer_tokens = num_transfer_tokens.repeat(cur_future_num_blocks+1)
 
-        cur_x = x[:, prefill_length:prefill_length + (cur_num_draft_blocks+1) * block_length].clone()
-        cur_attn_mask = torch.ones(x.shape[0], (cur_num_draft_blocks+1) * block_length, prefill_length + (cur_num_draft_blocks+1) * block_length, device=x.device) # each token in current block and draft blocks attends to all previous blocks, current block, and draft blocks
+        cur_x = x[:, prefill_length:prefill_length + (cur_future_num_blocks+1) * block_length].clone()
+        cur_attn_mask = torch.ones(x.shape[0], (cur_future_num_blocks+1) * block_length, prefill_length + (cur_future_num_blocks+1) * block_length, device=x.device) # each token in current block and draft blocks attends to all previous blocks, current block, and draft blocks
         if cur_attn_mask.dim() == 3:
             cur_attn_mask = cur_attn_mask[:, None, :, :]
-        cur_position_ids = position_ids[:, prefill_length:prefill_length + (cur_num_draft_blocks+1) * block_length]
-        block_priority_shift = torch.arange(cur_num_draft_blocks, -1, -1, device=x.device).repeat_interleave(block_length)
+        cur_position_ids = position_ids[:, prefill_length:prefill_length + (cur_future_num_blocks+1) * block_length]
+        block_priority_shift = torch.arange(cur_future_num_blocks, -1, -1, device=x.device).repeat_interleave(block_length)
 
         # First forward pass
         # step = 0
@@ -444,7 +444,7 @@ def block_diffusion_generate_FreeDave_v1(
                 
                 # Draft token filling from last forward pass
                 if num_block < num_blocks - 1:
-                    cur_draft_steps = min(draft_steps, denoising_steps * cur_num_draft_blocks)
+                    cur_draft_steps = min(draft_steps, denoising_steps * cur_future_num_blocks)
                 else:
                     cur_draft_steps = min(draft_steps, denoising_steps - step)
 
@@ -528,7 +528,7 @@ def block_diffusion_generate_FreeDave_v1(
                     store_kv=True)
 
         # Fill current block; update prefill_length and num_block
-        x[:, prefill_length:prefill_length + (cur_num_draft_blocks+1) * block_length] = cur_x
+        x[:, prefill_length:prefill_length + (cur_future_num_blocks+1) * block_length] = cur_x
         prefill_length += block_length
 
         if stopping_criteria_idx is not None and any(stop_idx in x[:, prompt_length:] for stop_idx in stopping_criteria_idx):
@@ -576,7 +576,7 @@ def token_filling(
     num_transfer_tokens: torch.Tensor, 
     step: Union[torch.Tensor, List[int]], 
     draft_steps: int=1, 
-    block_priority_shift: Optional[torch.Tensor] = None
+    block_priority_shift: Optional[torch.Tensor] = None,
 ):
 
     x_draft = x.unsqueeze(1).expand(x.shape[0], draft_steps, *x.shape[1:]).clone() # (batch, draft_steps, seq_len)
@@ -607,19 +607,19 @@ def token_filling(
                 transfer_index[j, k, idx] = True
 
     #TODO: adaptation
-    # elif remasking_strategy == 'low_confidence_dynamic':
-    #     confidence = torch.where(mask_index, x0_p, -torch.inf)
-    #     transfer_index = torch.zeros_like(x_draft, dtype=torch.bool)
-    #     for j in range(confidence.shape[0]):
-    #         high_conf_mask = confidence[j] > confidence_threshold
-    #         num_high_confidence = high_conf_mask.sum()
+    elif remasking_strategy == 'low_confidence_dynamic':
+        confidence = torch.where(mask_index, x0_p, -torch.inf)
+        transfer_index = torch.zeros_like(x_draft, dtype=torch.bool)
+        for j in range(confidence.shape[0]):
+            high_conf_mask = confidence[j] > confidence_threshold
+            num_high_confidence = high_conf_mask.sum()
 
-    #         for k in range(draft_steps):
-    #             if num_high_confidence >= num_transfer_tokens[step: step + k + 1].sum():
-    #                 transfer_index[j, k] = high_conf_mask
-    #             else:
-    #                 _, idx = torch.topk(confidence[j], num_transfer_tokens[step: step + k + 1].sum())
-    #                 transfer_index[j, k, idx] = True
+            for k in range(draft_steps):
+                if num_high_confidence >= num_transfer_tokens[step[j]: step[j] + k + 1].sum():
+                    transfer_index[j, k] = high_conf_mask
+                else:
+                    _, idx = torch.topk(confidence[j], num_transfer_tokens[step[j]: step[j] + k + 1].sum())
+                    transfer_index[j, k, idx] = True
 
     else:
         raise ValueError(
