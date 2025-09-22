@@ -1,5 +1,5 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from trado_generate import block_diffusion_generate, block_diffusion_generate_FreeDave, block_diffusion_generate_FreeDave_v1
+from trado_generate import block_diffusion_generate, block_diffusion_generate_FreeDave, block_diffusion_generate_FreeDave_v1, block_diffusion_generate_FreeDave_v1_debug
 from monitor_utils import ForwardHookCounter
 import time
 import json, os
@@ -17,6 +17,7 @@ def get_config():
 
 if __name__ == '__main__':
     config = get_config()
+    cprint('Experiment config:\n{}'.format(config), color='green')
 
     dataset = config.dataset.eval_dataset
     data_path = 'data/' + dataset + '.json'
@@ -115,7 +116,8 @@ if __name__ == '__main__':
     os.makedirs(save_dir, exist_ok=True)
 
     sampling_mode = 'normal' if config.rollout.draft_steps == 1 else f'fast-draft={config.rollout.draft_steps}'
-    save_filename = f'{os.path.basename(model_path)}-{sampling_mode}-max_gen_length={config.rollout.max_token}-block_size={config.rollout.block_size}-block_denoising_steps={config.rollout.denoising_steps_per_block}-{dataset}.json'
+    remasking_strategy = 'static' if config.rollout.remasking_strategy == "low_confidence_static" else 'dynamic'
+    save_filename = f'{os.path.basename(model_path)}-{sampling_mode}-{remasking_strategy}-max_gen_length={config.rollout.max_token}-block_size={config.rollout.block_size}-block_denoising_steps={config.rollout.denoising_steps_per_block}-{dataset}.json'
     
     with open(os.path.join(save_dir, save_filename), 'w') as f:
         json.dump(data, f, indent=4)

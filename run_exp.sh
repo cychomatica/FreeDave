@@ -2,12 +2,14 @@ DATASETS=("MATH500" "GSM8K" "AIME2024")
 MODELS=("Gen-Verse/TraDo-4B-Instruct" "Gen-Verse/TraDo-8B-Instruct" "Gen-Verse/TraDo-8B-Thinking" "JetLM/SDAR-4B-Chat" "JetLM/SDAR-8B-Chat" "Dream-org/Dream-v0-Instruct-7B" "GSAI-ML/LLaDA-8B-Instruct")
 FAST_SAMPLING_METHODS=("NA" "Naive" "Dynamic" "FreeDave" "FreeDave++")
 
-MODEL=${MODELS[0]}
-DATASET=${DATASETS[0]}
-FAST_SAMPLING_METHOD=${FAST_SAMPLING_METHODS[0]}
+MODEL="Gen-Verse/TraDo-4B-Instruct"
+DATASET="MATH500"
+FAST_SAMPLING_METHOD="FreeDave++"
 
 if [[ "$MODEL" == "Gen-Verse/TraDo-4B-Instruct" || "$MODEL" == "Gen-Verse/TraDo-8B-Instruct" || "$MODEL" == "Gen-Verse/TraDo-8B-Thinking" ]]; 
 then
+    echo "Running $MODEL on $DATASET"
+    echo "Fast sampling method: $FAST_SAMPLING_METHOD"
     if [[ "$MODEL" == "Gen-Verse/TraDo-8B-Thinking" ]];
     then
         MAX_TOKEN=30000
@@ -15,40 +17,39 @@ then
         MAX_TOKEN=2048
     fi
 
-    if [[ "$FAST_SAMPLING_METHOD" == "NA" ]];
+    REMASKING_STRATEGY="low_confidence_static"
+    FAST_SAMPLING_VERSION="NA"
+    K=1
+    DRAFT_STEPS=1
+    DENOISING_STEPS_PER_BLOCK=4
+
+    if [[ "$FAST_SAMPLING_METHOD" == "Naive" ]];
     then
-        REMASKING_STRATEGY="low_confidence_static"
-        FAST_SAMPLING_VERSION="NA"
-    elif [[ "$FAST_SAMPLING_METHOD" == "Naive" ]];
-    then
-        REMASKING_STRATEGY="low_confidence_static"
-        FAST_SAMPLING_VERSION="NA"
+        DENOISING_STEPS_PER_BLOCK=2
     elif [[ "$FAST_SAMPLING_METHOD" == "Dynamic" ]];
     then
         REMASKING_STRATEGY="low_confidence_dynamic"
-        FAST_SAMPLING_VERSION="NA"
+        K=0
     elif [[ "$FAST_SAMPLING_METHOD" == "FreeDave" ]];
     then
-        REMASKING_STRATEGY="low_confidence_static"
+        DRAFT_STEPS=4
         FAST_SAMPLING_VERSION="v0"
     elif [[ "$FAST_SAMPLING_METHOD" == "FreeDave++" ]];
     then
-        REMASKING_STRATEGY="low_confidence_dynamic"
+        DRAFT_STEPS=8
         FAST_SAMPLING_VERSION="v1"
     fi
-
-    echo "Running $MODEL on $DATASET"
-    CUDA_VISIBLE_DEVICES=4 python trado_eval.py \
+    CUDA_VISIBLE_DEVICES=2 python trado_eval.py \
     config=configs/trado_eval.yaml \
     dataset.eval_dataset=$DATASET \
     model=$MODEL \
     rollout.max_token=$MAX_TOKEN \
     rollout.block_size=4 \
-    rollout.denoising_steps_per_block=4 \
-    rollout.draft_steps=1 \
-    rollout.top_k=0 \
-    rollout.remasking_strategy=low_confidence_dynamic \
-    rollout.fast_sampling_version=NA
+    rollout.denoising_steps_per_block=$DENOISING_STEPS_PER_BLOCK \
+    rollout.draft_steps=$DRAFT_STEPS \
+    rollout.top_k=$K \
+    rollout.remasking_strategy=$REMASKING_STRATEGY \
+    rollout.fast_sampling_version=$FAST_SAMPLING_VERSION
 elif [[ "$MODEL" == "JetLM/SDAR-4B-Chat" || "$MODEL" == "JetLM/SDAR-8B-Chat" ]]; 
 then
     echo "Running $MODEL on $DATASET"

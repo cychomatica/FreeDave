@@ -23,7 +23,6 @@ from dataclasses import dataclass
 from torch.nn import functional as F
 import torch
 
-
 # def top_p_logits(logits, top_p=None):
 #     sorted_logits, sorted_indices = torch.sort(logits, descending=True)
 #     cumulative_probs = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
@@ -326,15 +325,15 @@ def block_diffusion_generate(
             if (x[:, current_block_start:current_block_end] == mask_token_id).sum() == 0:
                 break
         
-        # block_all_pad = torch.all(
-        #     x[:, current_block_start:current_block_end] == pad_token_id
-        # )
-        # if block_all_pad:
-        #     if current_block_end < x.size(1):
-        #         x[:, current_block_end:] = pad_token_id
-        #     if histories is not None:
-        #         histories.append(x.clone().cpu())
-        #     break
+        block_all_pad = torch.all(
+            x[:, current_block_start:current_block_end] == pad_token_id
+        )
+        if block_all_pad:
+            if current_block_end < x.size(1):
+                x[:, current_block_end:] = pad_token_id
+            if histories is not None:
+                histories.append(x.clone().cpu())
+            break
     
     if return_dict_in_generate:
         return DreamModelOutput(

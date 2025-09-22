@@ -29,6 +29,7 @@ def generation_tokens_hook_func(step, x, logits):
 if __name__ == "__main__":
     
     config = get_config()
+    cprint('Experiment config:\n{}'.format(config), color='green')
 
     dataset = config.dataset.eval_dataset
     data_path = 'data/' + dataset + '.json'
@@ -71,7 +72,7 @@ if __name__ == "__main__":
                                 pad_target_penalty = config.rollout.pad_target_penalty,
                                 unmask_threshold = unmask_threshold
                                 )
-        cprint(f'Evaluating {os.path.basename(model_path)} on {dataset}.\nUsing fast sampling (v0) with draft steps={config.rollout.draft_steps}', color='green')
+        cprint(f'Evaluating {os.path.basename(model_path)} on {dataset}.\nUsing FreeDave with draft steps={config.rollout.draft_steps}', color='green')
     else:
         generate_func = partial(block_diffusion_generate, 
                                 model=model,
@@ -135,8 +136,9 @@ if __name__ == "__main__":
     save_dir = os.path.join(config.experiment.project, 'temp_data')
     os.makedirs(save_dir, exist_ok=True)
 
-    sampling_mode = 'normal' if config.rollout.draft_steps == 1 else f'fast-draft={config.rollout.draft_steps}'
-    save_filename = f'{os.path.basename(model_path)}-{sampling_mode}-block_size={config.rollout.block_size}-steps={config.rollout.steps}-{dataset}.json'
+    sampling_mode = 'normal' if config.rollout.draft_steps == 1 else f'fast-draft_steps={config.rollout.draft_steps}'
+    remasking_strategy = 'static' if config.rollout.remasking_strategy == "low_confidence_static" else 'dynamic'
+    save_filename = f'{os.path.basename(model_path)}-{sampling_mode}-{remasking_strategy}-max_gen_length={config.rollout.max_gen_length}-block_size={config.rollout.block_size}-steps={config.rollout.steps}-{dataset}.json'
     
     with open(os.path.join(save_dir, save_filename), 'w') as f:
         json.dump(data, f, indent=4)

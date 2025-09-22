@@ -81,7 +81,7 @@
                 "config=configs/trado_chat.yaml",
                 "rollout.remasking_strategy=low_confidence_dynamic",
                 "rollout.top_k=0",
-                "rollout.draft_steps=1",
+                "rollout.draft_steps=4",
                 "rollout.fast_sampling_version=NA",
             ],
             "env": {
