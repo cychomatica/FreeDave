@@ -10,3 +10,7 @@ acc: 0.736
 avg length: 666.976
 avg time: 40.72871104669571
 avg nfe: 1073.682
+acc: 0.764
+avg length: 680.114
+avg time: 41.57347598552704
+avg nfe: 1009.498

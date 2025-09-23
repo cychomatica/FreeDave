@@ -1,24 +1,11 @@
 import torch
-from llada_generate import generate_with_prefix_cache, generate_with_prefix_cache_FreeDave
+from generate.llada_generate import generate_with_prefix_cache, generate_with_prefix_cache_FreeDave
 import time
-from omegaconf import OmegaConf
+from utils.eval_utils import get_config
 from transformers import AutoTokenizer
 from modeling.llada.modeling_llada import LLaDAModelLM
-from monitor_utils import ForwardHookCounter
+from utils.monitor_utils import ForwardHookCounter
 from termcolor import cprint
-
-def get_config():
-    cli_conf = OmegaConf.from_cli()
-    yaml_conf = OmegaConf.load(cli_conf.config)
-    conf = OmegaConf.merge(yaml_conf, cli_conf)
-    return conf
-
-def generation_tokens_hook_func(step, x, logits):
-            print(f'############ Step {step} ############')
-            # print(tokenizer.decode(h[0].tolist()))
-            print(tokenizer.decode(x[0].tolist()).split(tokenizer.eos_token)[0].replace(tokenizer.mask_token, ' '), end='\r')
-            time.sleep(0.01)
-            return x
 
 if __name__ == '__main__':
     
@@ -75,7 +62,7 @@ if __name__ == '__main__':
                 gen_length=config.rollout.max_gen_length,
                 block_length=config.rollout.block_size, 
                 temperature=config.rollout.temperature,
-                strategy=config.rollout.target, 
+                target=config.rollout.target, 
                 mask_id=mask_id, 
                 further_horizon=config.rollout.further_horizon,
                 use_cache=config.rollout.use_cache, 
@@ -91,7 +78,7 @@ if __name__ == '__main__':
 
         # Print response
         print('Model:', generation)
-        cprint(f'Normal generation: (time: {end_time - start_time} seconds; num of forward passes: {forward_counter.counter.count}; avg step forward time: {(end_time - start_time) / forward_counter.counter.count} seconds)', 'cyan')
+        cprint('Normal generation: (time: {} seconds; num of forward passes: {}; avg step forward time: {} seconds)'.format(end_time - start_time, forward_counter.counter.count, (end_time - start_time) / forward_counter.counter.count), 'cyan')
         print('-'*66)
         messages.append({'role': 'assistant', 'content': generation})
 
@@ -108,7 +95,7 @@ if __name__ == '__main__':
                 gen_length=config.rollout.max_gen_length,
                 block_length=config.rollout.block_size, 
                 temperature=config.rollout.temperature,
-                strategy=config.rollout.target, 
+                target=config.rollout.target, 
                 mask_id=mask_id, 
                 further_horizon=config.rollout.further_horizon,
                 use_cache=config.rollout.use_cache, 
@@ -123,28 +110,8 @@ if __name__ == '__main__':
         generation = generation.split(tokenizer.eos_token)[0].split('<|eot_id|>')[0].strip()
         # Print response
         print('Model:', generation)
-        cprint(f'Fast generation: (time: {end_time - start_time} seconds; num of forward passes: {forward_counter.counter.count}; avg step forward time: {(end_time - start_time) / forward_counter.counter.count} seconds)', 'cyan')
+        cprint('Fast generation: (time: {} seconds; num of forward passes: {}; avg step forward time: {} seconds)'.format(end_time - start_time, forward_counter.counter.count, (end_time - start_time) / forward_counter.counter.count), 'cyan')
         print('-'*66)
 
         # Add model response to conversation history
         # messages.append({'role': 'assistant', 'content': generation})
-
-
-'''An example conversation (maybe different due to randomness)
-<|im_start|>system
-You are a helpful assistant.<|im_end|>
-<|im_start|>user
-Janet's ducks lay 16 eggs per day. She eats three for breakfast every morning and bakes muffins for her friends every day with four. She sells the remainder at the farmers' market daily for $2 per fresh duck egg. How much in dollars does she make every day at the farmers' market?<|im_end|>
-<|im_start|>assistant
-Janet sells 16 - 3 - 4 = 9 eggs per day.
-She makes 9 * $2 = $18 per day.<|im_end|>
-<|im_start|>user
-what if her duck lay three more eggs<|im_end|>
-<|im_start|>assistant
-If Janet's ducks lay three more eggs per day, she would have 16 + 3 = 19 eggs per day.<|im_end|>
-<|im_start|>user
-yes, so how many dollars she make<|im_end|>
-<|im_start|>assistant
-Janet sells 19 - 3 - 4 = 12 eggs per day.
-She makes 12 * $2 = $24 per day.
-'''

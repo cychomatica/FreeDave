@@ -1,11 +1,11 @@
 import torch
-from dream_generate import block_diffusion_generate, block_diffusion_generate_FreeDave, block_diffusion_generate_batch
+from generate.dream_generate import block_diffusion_generate, block_diffusion_generate_FreeDave, block_diffusion_generate_batch
 import time
 from omegaconf import OmegaConf
 from modeling.dream.generation_utils_block import DreamGenerationConfig
 from modeling.dream.tokenization_dream import DreamTokenizer
 from modeling.dream.modeling_dream import DreamModel
-from monitor_utils import ForwardHookCounter
+from utils.monitor_utils import ForwardHookCounter
 from termcolor import cprint
 
 def get_config():
@@ -15,7 +15,7 @@ def get_config():
     return conf
 
 def generation_tokens_hook_func(step, x, logits):
-            print(f'############ Step {step} ############')
+            print('############ Step {} ############'.format(step))
             # print(tokenizer.decode(h[0].tolist()))
             print(tokenizer.decode(x[0].tolist()).split(tokenizer.eos_token)[0].replace(tokenizer.mask_token, ' '), end='\r')
             time.sleep(0.01)
@@ -103,7 +103,7 @@ if __name__ == '__main__':
 
         # Print response
         print('Model:', generation)
-        cprint(f'Normal generation: (time: {end_time - start_time} seconds; num of forward passes: {forward_counter.counter.count}; avg step forward time: {(end_time - start_time) / forward_counter.counter.count} seconds)', 'cyan')
+        cprint('Normal generation: (time: {} seconds; num of forward passes: {}; avg step forward time: {} seconds)'.format(end_time - start_time, forward_counter.counter.count, (end_time - start_time) / forward_counter.counter.count), 'cyan')
         print('-'*66)
 
         # # Generate response
@@ -134,7 +134,7 @@ if __name__ == '__main__':
 
         # # Print response
         # print('Model:', generation)
-        # cprint(f'Normal batch generation: (time: {end_time - start_time} seconds; num of forward passes: {forward_counter.counter.count}; avg step forward time: {(end_time - start_time) / forward_counter.counter.count} seconds)', 'cyan')
+        # cprint('Normal batch generation: (time: {} seconds; num of forward passes: {}; avg step forward time: {} seconds)'.format(end_time - start_time, forward_counter.counter.count, (end_time - start_time) / forward_counter.counter.count), 'cyan')
         # print('-'*66)
 
         # Generate response
@@ -165,7 +165,7 @@ if __name__ == '__main__':
 
         # Print response
         print('Model:', generation)
-        cprint(f'Fast generation: (time: {end_time - start_time} seconds; num of forward passes: {forward_counter.counter.count}; avg step forward time: {(end_time - start_time) / forward_counter.counter.count} seconds)', 'cyan')
+        cprint('Fast generation: (time: {} seconds; num of forward passes: {}; avg step forward time: {} seconds)'.format(end_time - start_time, forward_counter.counter.count, (end_time - start_time) / forward_counter.counter.count), 'cyan')
         print('-'*66)
 
         # Add model response to conversation history

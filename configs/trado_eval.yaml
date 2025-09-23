@@ -30,5 +30,5 @@ rollout:
     start_with_think: False # if not reasoning model, set to False, otherwise True
     output_unmasking_history: True
     fast_sampling_version: "NA" # "NA", "v0" or "v1"
-
+    eager_acceptance_mode: False # True or False
 

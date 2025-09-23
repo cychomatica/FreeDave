@@ -44,15 +44,16 @@
             "console": "integratedTerminal",
             "args": [
                 "config=configs/llada_eval.yaml",
-                "rollout.draft_steps=2",
-                "rollout.max_gen_length=256",
-                "rollout.steps=256",
-                // "rollout.further_horizon=0",
-                // "rollout.block_size=4",
+                "rollout.draft_steps=4",
+                // "rollout.max_gen_length=256",
+                // "rollout.steps=256",
+                "rollout.further_horizon=32",
+                "rollout.block_size=32",
             ],
             "env": {
-                "CUDA_VISIBLE_DEVICES": "7"
+                "CUDA_VISIBLE_DEVICES": "3"
             },
+            "justMyCode": false
         },
         {
             "name": "my own eval trado",
@@ -85,7 +86,7 @@
                 "rollout.fast_sampling_version=NA",
             ],
             "env": {
-                "CUDA_VISIBLE_DEVICES": "7",
+                "CUDA_VISIBLE_DEVICES": "2",
                 "PYTHONPATH": "${workspaceFolder}"
             },
             "cwd": "${workspaceFolder}"

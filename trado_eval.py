@@ -1,13 +1,13 @@
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from trado_generate import block_diffusion_generate, block_diffusion_generate_FreeDave, block_diffusion_generate_FreeDave_v1, block_diffusion_generate_FreeDave_v1_debug
-from monitor_utils import ForwardHookCounter
-import time
-import json, os
+from generate.trado_generate import block_diffusion_generate, block_diffusion_generate_FreeDave, block_diffusion_generate_FreeDave_v1, block_diffusion_generate_FreeDave_v1_debug
+from utils.monitor_utils import ForwardHookCounter
+import time, json, os
 from functools import partial
 from omegaconf import OmegaConf
-from eval_utils import data_prepare, output_process, get_token_lengths, reward
+from utils.eval_utils import data_prepare, output_process, get_token_lengths, reward
 from tqdm import tqdm
 from termcolor import cprint
+import torch
 
 def get_config():
     cli_conf = OmegaConf.from_cli()
@@ -44,8 +44,9 @@ if __name__ == '__main__':
                                     top_p=config.rollout.top_p,
                                     remasking_strategy=config.rollout.remasking_strategy,
                                     confidence_threshold=config.rollout.dynamic_threshold,
+                                    eager_acceptance_mode=config.rollout.eager_acceptance_mode,
                                     )
-            cprint(f'Evaluating {os.path.basename(model_path)} on {dataset}.\nUsing FreeDave++ ({config.rollout.remasking_strategy}) with draft steps={config.rollout.draft_steps}', color='green')
+            cprint('Evaluating {} on {}.\nUsing FreeDave++ ({}, eager acceptance {}) with draft steps={}'.format(os.path.basename(model_path), dataset, config.rollout.remasking_strategy, 'enabled' if config.rollout.eager_acceptance_mode else 'disabled', config.rollout.draft_steps), color='green')
         else:
             generate_func = partial(block_diffusion_generate_FreeDave, 
                                     model=model,
@@ -60,7 +61,7 @@ if __name__ == '__main__':
                                     remasking_strategy=config.rollout.remasking_strategy,
                                     confidence_threshold=config.rollout.dynamic_threshold,
                                     )
-            cprint(f'Evaluating {os.path.basename(model_path)} on {dataset}.\nUsing FreeDave ({config.rollout.remasking_strategy}) with draft steps={config.rollout.draft_steps}', color='green')
+            cprint('Evaluating {} on {}.\nUsing FreeDave ({}) with draft steps={}'.format(os.path.basename(model_path), dataset, config.rollout.remasking_strategy, config.rollout.draft_steps), color='green')
     else:
         generate_func = partial(block_diffusion_generate, 
                                 model=model,
@@ -74,7 +75,7 @@ if __name__ == '__main__':
                                 remasking_strategy=config.rollout.remasking_strategy,
                                 confidence_threshold=config.rollout.dynamic_threshold,
                                 )
-        cprint(f'Evaluating {os.path.basename(model_path)} on {dataset}.\nUsing normal sampling ({config.rollout.remasking_strategy})', color='green')
+        cprint('Evaluating {} on {}.\nUsing normal sampling ({})'.format(os.path.basename(model_path), dataset, config.rollout.remasking_strategy), color='green')
 
     total_sampling_time = 0
     total_response_tokens = 0
@@ -91,11 +92,15 @@ if __name__ == '__main__':
         with nfe_counter.count_context():
             output_ids = generate_func(prompt=tokens)
         end_time = time.time()
-        output_text = tokenizer.decode(output_ids[0], skip_special_tokens=False)
-        cleaned_text = output_text.replace('<|MASK|>', '').replace('<|endoftext|>', '')
         sampling_time = end_time - start_time
         nfe = nfe_counter.counter.count
 
+        output_ids = output_ids.cpu()
+        torch.cuda.empty_cache()
+
+        output_text = tokenizer.decode(output_ids[0], skip_special_tokens=False)
+        cleaned_text = output_text.replace('<|MASK|>', '').replace('<|endoftext|>', '').replace('<|im_end|>', '').strip()
+        
         data[i]['full_output'].append(output_text)
         data[i]['cleaned_output'].append(cleaned_text)
         data[i]['response_tokens'] = get_token_lengths(data[i]['cleaned_output'], tokenizer)
@@ -106,18 +111,18 @@ if __name__ == '__main__':
         total_response_tokens += sum(data[i]['response_tokens'])
         total_nfe += nfe
 
-    cprint(f'Generation done!', color='green')
-    cprint(f'Avg throughput (tokens/s): {total_response_tokens / total_sampling_time}', color='green')
-    cprint(f'Avg throughput (tokens/nfe): {total_response_tokens / total_nfe}', color='green')
+    cprint('Generation done!', color='green')
+    cprint('Avg throughput (tokens/s): {}'.format(total_response_tokens / total_sampling_time), color='green')
+    cprint('Avg throughput (tokens/nfe): {}'.format(total_response_tokens / total_nfe), color='green')
 
     data = output_process(config.dataset.data_type, data)
 
     save_dir = os.path.join(config.experiment.project, 'temp_data')
     os.makedirs(save_dir, exist_ok=True)
 
-    sampling_mode = 'normal' if config.rollout.draft_steps == 1 else f'fast-draft={config.rollout.draft_steps}'
+    sampling_mode = 'normal' if config.rollout.draft_steps == 1 else 'fast-draft={}'.format(config.rollout.draft_steps)
     remasking_strategy = 'static' if config.rollout.remasking_strategy == "low_confidence_static" else 'dynamic'
-    save_filename = f'{os.path.basename(model_path)}-{sampling_mode}-{remasking_strategy}-max_gen_length={config.rollout.max_token}-block_size={config.rollout.block_size}-block_denoising_steps={config.rollout.denoising_steps_per_block}-{dataset}.json'
+    save_filename = '{}-{}-{}-max_gen_length={}-block_size={}-block_denoising_steps={}-{}.json'.format(os.path.basename(model_path), sampling_mode, remasking_strategy, config.rollout.max_token, config.rollout.block_size, config.rollout.denoising_steps_per_block, dataset)
     
     with open(os.path.join(save_dir, save_filename), 'w') as f:
         json.dump(data, f, indent=4)

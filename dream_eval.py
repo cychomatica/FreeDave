@@ -1,30 +1,15 @@
 import torch
-from dream_generate import block_diffusion_generate, block_diffusion_generate_FreeDave
+from generate.dream_generate import block_diffusion_generate, block_diffusion_generate_FreeDave
 from modeling.dream.generation_utils_block import DreamGenerationConfig
 from modeling.dream.tokenization_dream import DreamTokenizer
 from modeling.dream.modeling_dream import DreamModel
-from monitor_utils import ForwardHookCounter
+from utils.monitor_utils import ForwardHookCounter
 
-import time
-import json, os
+import time, json, os
 from functools import partial
-from omegaconf import OmegaConf
-from eval_utils import data_prepare, output_process, reward, get_token_lengths
+from utils.eval_utils import data_prepare, output_process, reward, get_token_lengths, get_config
 from tqdm import tqdm
 from termcolor import cprint
-
-def get_config():
-    cli_conf = OmegaConf.from_cli()
-    yaml_conf = OmegaConf.load(cli_conf.config)
-    conf = OmegaConf.merge(yaml_conf, cli_conf)
-    return conf
-
-def generation_tokens_hook_func(step, x, logits):
-    print(f"############ Step {step} ############")
-    # print(tokenizer.decode(h[0].tolist()))
-    print(tokenizer.decode(x[0].tolist()).split(tokenizer.eos_token)[0].replace(tokenizer.mask_token, " "), end="\r")
-    time.sleep(0.01)
-    return x
 
 if __name__ == "__main__":
     
@@ -72,7 +57,7 @@ if __name__ == "__main__":
                                 pad_target_penalty = config.rollout.pad_target_penalty,
                                 unmask_threshold = unmask_threshold
                                 )
-        cprint(f'Evaluating {os.path.basename(model_path)} on {dataset}.\nUsing FreeDave with draft steps={config.rollout.draft_steps}', color='green')
+        cprint('Evaluating {} on {}.\nUsing FreeDave with draft steps={}'.format(os.path.basename(model_path), dataset, config.rollout.draft_steps), color='green')
     else:
         generate_func = partial(block_diffusion_generate, 
                                 model=model,
@@ -86,7 +71,7 @@ if __name__ == "__main__":
                                 pad_target_penalty = config.rollout.pad_target_penalty,
                                 unmask_threshold = unmask_threshold
                                 )
-        cprint(f'Evaluating {os.path.basename(model_path)} on {dataset}.\nUsing normal sampling', color='green')
+        cprint('Evaluating {} on {}.\nUsing normal sampling'.format(os.path.basename(model_path), dataset), color='green')
 
     total_sampling_time = 0
     total_response_tokens = 0
@@ -127,18 +112,18 @@ if __name__ == "__main__":
         total_response_tokens += sum(data[i]['response_tokens'])
         total_nfe += nfe
 
-    cprint(f'Generation done!', color='green')
-    cprint(f'Avg throughput (tokens/s): {total_response_tokens / total_sampling_time}', color='green')
-    cprint(f'Avg throughput (tokens/nfe): {total_response_tokens / total_nfe}', color='green')
+    cprint('Generation done!', color='green')
+    cprint('Avg throughput (tokens/s): {}'.format(total_response_tokens / total_sampling_time), color='green')
+    cprint('Avg throughput (tokens/nfe): {}'.format(total_response_tokens / total_nfe), color='green')
 
     data = output_process(config.dataset.data_type, data)
 
     save_dir = os.path.join(config.experiment.project, 'temp_data')
     os.makedirs(save_dir, exist_ok=True)
 
-    sampling_mode = 'normal' if config.rollout.draft_steps == 1 else f'fast-draft_steps={config.rollout.draft_steps}'
-    remasking_strategy = 'static' if config.rollout.remasking_strategy == "low_confidence_static" else 'dynamic'
-    save_filename = f'{os.path.basename(model_path)}-{sampling_mode}-{remasking_strategy}-max_gen_length={config.rollout.max_gen_length}-block_size={config.rollout.block_size}-steps={config.rollout.steps}-{dataset}.json'
+    sampling_mode = 'normal' if config.rollout.draft_steps == 1 else 'fast-draft_steps={}'.format(config.rollout.draft_steps)
+    remasking_strategy = 'static' if config.rollout.target == "low_confidence_static" else 'dynamic'
+    save_filename = '{}-{}-{}-max_gen_length={}-block_size={}-steps={}-{}.json'.format(os.path.basename(model_path), sampling_mode, remasking_strategy, config.rollout.max_gen_length, config.rollout.block_size, config.rollout.steps, dataset)
     
     with open(os.path.join(save_dir, save_filename), 'w') as f:
         json.dump(data, f, indent=4)
