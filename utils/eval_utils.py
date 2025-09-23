@@ -185,7 +185,7 @@ def reward(config, outputs_dir, outputs_filename):
     with open(os.path.join(outputs_dir, outputs_filename), 'w', encoding='utf-8') as f:
         json.dump(data, f, indent=2, ensure_ascii=False)
 
-    results_dir = os.path.join(project_name, 'results')
+    results_dir = os.path.join(os.path.dirname(outputs_dir), 'results')
     results_filename = outputs_filename.replace('.json', '.txt')
     os.makedirs(results_dir, exist_ok=True)
     with open(os.path.join(results_dir, results_filename), 'a') as f:
@@ -202,4 +202,4 @@ def reward(config, outputs_dir, outputs_filename):
 
 if __name__ == '__main__':
     config = get_config()
-    reward(config)
+    reward(config, config.outputs_dir, config.outputs_filename)

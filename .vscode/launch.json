@@ -22,7 +22,7 @@
             "name": "debug dream_chat",
             "type": "debugpy",
             "request": "launch",
-            "program": "dream_chat.py",
+            "program": "dream_chat_example.py",
             "console": "integratedTerminal",
             "args": [
                 "config=configs/dream_eval.yaml",
@@ -40,7 +40,7 @@
             "name": "debug llada_chat",
             "type": "debugpy",
             "request": "launch",
-            "program": "llada_chat.py",
+            "program": "llada_chat_example.py",
             "console": "integratedTerminal",
             "args": [
                 "config=configs/llada_eval.yaml",
@@ -76,7 +76,7 @@
             "name": "debug trado_chat",
             "type": "debugpy",
             "request": "launch",
-            "program": "trado_chat.py",
+            "program": "trado_chat_example.py",
             "console": "integratedTerminal",
             "args": [
                 "config=configs/trado_chat.yaml",

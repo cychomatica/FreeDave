@@ -3,10 +3,11 @@
 # DATASETS=("MATH500" "GSM8K" "AIME2024")
 # MODELS=("Gen-Verse/TraDo-4B-Instruct" "Gen-Verse/TraDo-8B-Instruct" "Gen-Verse/TraDo-8B-Thinking" "JetLM/SDAR-4B-Chat" "JetLM/SDAR-8B-Chat" "Dream-org/Dream-v0-Instruct-7B" "GSAI-ML/LLaDA-8B-Instruct")
 # FAST_SAMPLING_METHODS=("NA" "Naive" "Dynamic" "FreeDave" "FreeDave++")
+# NOTE: FreeDave++ currently only supports TraDo models
 
-MODEL="Gen-Verse/TraDo-4B-Instruct"
+MODEL="Dream-org/Dream-v0-Instruct-7B"
 DATASET="GSM8K"
-FAST_SAMPLING_METHOD="FreeDave++"
+FAST_SAMPLING_METHOD="FreeDave"
 
 echo "Running $MODEL on $DATASET"
 echo "Fast sampling method: $FAST_SAMPLING_METHOD"
@@ -45,7 +46,7 @@ then
         EAGER_ACCEPTANCE_MODE=True
     fi
 
-    python trado_eval.py \
+    python -m eval.trado_eval \
     config=configs/trado_eval.yaml \
     dataset.eval_dataset=$DATASET \
     model=$MODEL \
@@ -85,7 +86,7 @@ then
         FAST_SAMPLING_VERSION="v1"
     fi
 
-    python trado_eval.py \
+    python -m eval.trado_eval \
     config=configs/sdar_eval.yaml \
     dataset.eval_dataset=$DATASET \
     model=$MODEL \
@@ -117,10 +118,10 @@ then
         BLOCK_SIZE=4
     elif [[ "$FAST_SAMPLING_METHOD" == "FreeDave" ]];
     then
-        DRAFT_STEPS=2
+        DRAFT_STEPS=4
     fi    
 
-    python dream_eval.py \
+    python -m eval.dream_eval \
     config=configs/dream_eval.yaml \
     dataset.eval_dataset=$DATASET \
     model=$MODEL \
@@ -153,7 +154,7 @@ then
         DRAFT_STEPS=4
     fi   
 
-    python llada_eval.py \
+    python -m eval.llada_eval \
     config=configs/llada_eval.yaml \
     dataset.eval_dataset=$DATASET \
     model=$MODEL \
