@@ -798,7 +798,7 @@ def token_transfer(
                     raise ValueError(
                         "No mask tokens found in the current block.")
 
-    # NOTE: FreeDave also supports threshold-based dynamic sampling, but we do not use it due to the performance degradation brought by dynamic sampling.
+    # NOTE: FreeDave also supports threshold-based dynamic sampling, but we do not use it due to the performance degradation brought by dynamic sampling. For other models, we just skip this combination for now.
     # region
     elif remasking_strategy == 'low_confidence_dynamic':
         confidence = torch.where(mask_index, x0_p, -torch.inf)

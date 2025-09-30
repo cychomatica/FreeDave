@@ -1,7 +1,7 @@
 #! /bin/bash
 
 # DATASETS=("MATH500" "GSM8K" "AIME2024")
-# MODELS=("Gen-Verse/TraDo-4B-Instruct" "Gen-Verse/TraDo-8B-Instruct" "Gen-Verse/TraDo-8B-Thinking" "JetLM/SDAR-4B-Chat" "JetLM/SDAR-8B-Chat" "Dream-org/Dream-v0-Instruct-7B" "GSAI-ML/LLaDA-8B-Instruct")
+# MODELS=("Gen-Verse/TraDo-4B-Instruct" "Gen-Verse/TraDo-8B-Instruct" "Gen-Verse/TraDo-8B-Thinking" "JetLM/SDAR-4B-Chat" "JetLM/SDAR-8B-Chat" "Dream-org/Dream-v0-Instruct-7B")
 # FAST_SAMPLING_METHODS=("NA" "Dynamic" "FreeDave")
 
 MODEL="Gen-Verse/TraDo-4B-Instruct"
@@ -128,42 +128,9 @@ then
     rollout.top_k=$K \
     rollout.remasking_strategy=$REMASKING_STRATEGY
 
-elif [[ "$MODEL" == "GSAI-ML/LLaDA-8B-Instruct" ]]; 
-then
-    
-    MAX_TOKEN=1024
-    STEPS=1024
-    K=1
-    REMASKING_STRATEGY="low_confidence_static"
-    DRAFT_STEPS=1
-    BLOCK_SIZE=32
-    
-    if [[ "$FAST_SAMPLING_METHOD" == "Naive" ]];
-    then
-        STEPS=512
-    elif [[ "$FAST_SAMPLING_METHOD" == "Dynamic" ]];
-    then
-        K=0
-        REMASKING_STRATEGY="low_confidence_dynamic"
-    elif [[ "$FAST_SAMPLING_METHOD" == "FreeDave" ]];
-    then
-        DRAFT_STEPS=4
-    fi   
-
-    python -m eval.llada_eval \
-    config=configs/llada_eval.yaml \
-    dataset.eval_dataset=$DATASET \
-    model=$MODEL \
-    rollout.steps=$STEPS \
-    rollout.max_gen_length=$MAX_TOKEN \
-    rollout.block_size=$BLOCK_SIZE \
-    rollout.draft_steps=$DRAFT_STEPS \
-    rollout.top_k=$K \
-    rollout.remasking_strategy=$REMASKING_STRATEGY
-
 else
-    echo "Model $MODEL not found"
+    echo "Error: Model $MODEL not supported yet."
     exit 1
 fi
 
-echo "Evaluation for $MODEL on $DATASET completed"
+echo "Evaluation for $MODEL on $DATASET completed."
