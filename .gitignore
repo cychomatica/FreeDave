@@ -1,3 +1,5 @@
+.gitignore
 **/__pycache__/
 _history/
 .vscode/
+exp_results/

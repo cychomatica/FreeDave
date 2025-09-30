@@ -36,7 +36,7 @@ class DiffusionOutput:
     nfe:       int
 
 @torch.no_grad()
-def generate_with_prefix_cache(
+def block_diffusion_generate(
         model, 
         input_ids,
         steps, 
@@ -136,7 +136,7 @@ def generate_with_prefix_cache(
     return DiffusionOutput(sequences=x, history=histories, nfe=nfe)
 
 @torch.no_grad()
-def generate_with_prefix_cache_FreeDave(
+def block_diffusion_generate_FreeDave(
         model, 
         input_ids,
         steps, 

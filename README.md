@@ -1,6 +1,6 @@
 <div align="center">
 <br>
-<h3>Free Draft-and-Verification: Towards Lossless Sampling Acceleration for Diffusion Large Language Models</h3>
+<h3>Free Draft-and-Verification: Towards Lossless Lossless Parallel Decoding for Diffusion Large Language Models</h3>
 <p align="center">
   <a href="#">
     <img
@@ -11,26 +11,23 @@
 </p>
 </div>
 
-## Features 
+## Updates
+- **(09/30/2025) Add Supported Model**: [LLaDA](https://github.com/ML-GSAI/LLaDA).
 
-- **Model Support**: [TraDo](https://github.com/Gen-Verse/dLLM-RL), [SDAR](https://github.com/JetAstra/SDAR), [Dream](https://github.com/DreamLM/Dream), [LLaDA](https://github.com/ML-GSAI/LLaDA), [MMaDA](https://github.com/Gen-Verse/MMaDA), [Diffu-Coder](https://github.com/apple/ml-diffucoder) We support models with diverse structures, including full attention models, adapted models, and block attention models.
-- **Inference Acceleration**: improved [KV-cache](https://github.com/NVlabs/Fast-dLLM/tree/main), [jetengine](https://github.com/Labman42/JetEngine/tree/0ddc55ad3fb712b6374515b78d656f420e1a7243) (based on nano-vllm), different sampling strategies, support multi-nodes, easy to build your own accelerated inference methods
-
+- **(09/23/2025) Current Supported Models**: [TraDo](https://github.com/Gen-Verse/dLLM-RL), [SDAR](https://github.com/JetAstra/SDAR), [Dream](https://github.com/DreamLM/Dream)
 
 ## Overview
 
-We propose **FreeDave** (**Free** **D**raft-**a**nd-**Ve**rification), a fast sampling algorithm for diffusion language models, which achieves multi-token without the sacrifice of generation quanlity. 
+We propose **FreeDave** (**Free** **D**raft-**a**nd-**Ve**rification), a fast sampling algorithm for diffusion language models, which achieves lossless parallel decoding.
 
-FreeDave utilizes the property of diffusion language models 
+FreeDave utilizes the property of diffusion language models
 
 <p align="center">
-  <img src="assets/FreeDave Pipeline.png" width="100%"/>
+  <img src="assets/FreeDave_pipeline.png" width="100%"/>
 </p>
 
-
 ## Quick Start
-
-
+### Environment Setup
 ```bash
 conda create --name freedave python=3.10
 source activate freedave
@@ -40,11 +37,18 @@ pip install --no-cache-dir \
 flash_attn-2.7.4.post1+cu12torch2.6cxx11abiFALSE-cp310-cp310-linux_x86_64.whl
 pip install -r requirements.txt
 ```
-
+### Chat Examples
+We provide some examples of multi-turn chat for a quick start. 
+```bash
+python -m chat_examples.trado_chat_example
+# python -m chat_examples.dream_chat_example
+# python -m chat_examples.llada_chat_example
+```
 
 ## Dataset Preparation
 
 You can navigate to `./data` to download datasets for evaluation and training, for example as follows. In that directory, you will also find detailed instructions on how to modify your own dataset.
+
 ```bash
 cd data
 python download_data.py --dataset MATH500
@@ -58,31 +62,28 @@ After downloading the data, you are almost ready to evaluate or train diffusion 
 
 ## Inference & Evaluations
 
-After downloading the data, take [TraDo](https://github.com/Gen-Verse/dLLM-RL) models as an example. You can set the configurations in `configs/trado_eval.yaml` (see instructions and details in `./configs`) and run the following commands to perform inference with different sampling strategies.
+After downloading the data, take the [TraDo](https://github.com/Gen-Verse/dLLM-RL) models as an example. You can set the configurations in `configs/trado_eval.yaml` (see instructions and details in `./configs`) and run the following commands to perform inference with different sampling strategies.
+
 ```bash
 python -m eval.trado_eval config=configs/trado_eval.yaml
 # see details in ./configs
 ```
-Use `trado_eval.yaml` for TraDo models' inference, `sdar_eval.yaml` for SDAR, `dream_eval.yaml` for Dream and Diffu-Coder, and `llada_eval.yaml` for LLaDA and MMaDA. 
+
+Use `configs/trado_eval.yaml` for TraDo models' inference, `configs/sdar_eval.yaml` for SDAR, `configs/dream_eval.yaml` for Dream, and `configs/llada_eval.yaml` for LLaDA. A example script `run_exp.sh` is also provided for reference. 
+
 <!-- Instructions on how to set the configurations are provided in the corresponding configuration files.   -->
+
 <!-- We support both general tasks and coding tasks (including automated execution of code) in evaluation.   -->
+
 Now only math tasks are supported. Support on coding tasks is in progress.
 
 There are two main sampling methods you can choose:
 
 - **Static Sampling:** unmask fixed number of tokens each time
-
 - **Dynamic Sampling:** unmask tokens based on a chosen threshold, faster than static
 
-To have a look how diffusion language models sample, open `./sample/trace.viewer.html` in your browser, or generate trajectory by your self with `./sample/get_trace_viewer.py`.
 
-
-You can also perform inference across multiple nodes using `multinode_eval.py` with the same configuration files, with only minor modifications as instructed in the configuration files.
-In multi-node setup, the first node controls the others. You can run  
-`python multinode_eval.py config=configs/dream_multinode_eval.yaml` on the first node to eval, or submit the following as the entry command for a job:
-
-
-## 📖 Citation
+## Citation
 
 ```
 @article{wang2025trado,
@@ -93,31 +94,14 @@ In multi-node setup, the first node controls the others. You can run
 }
 ```
 
+## Acknowledgement
 
-## 🤝 Acknowledgement
-
-This repository is heavily built on the following open-source projects:
-
-- [TraDO](https://github.com/Gen-Verse/dLLM-RL)
+This repository is heavily built on [TraDo](https://github.com/Gen-Verse/dLLM-RL), and references the following open-source projects:
 - [SDAR](https://github.com/JetAstra/SDAR)
 - [Dream](https://github.com/DreamLM/Dream)
 - [LLaDA](https://github.com/ML-GSAI/LLaDA)
-<!-- [MMaDA](https://github.com/Gen-Verse/MMaDA/tree/main). -->
 
 and theoretical foundations:
-
 - [MDLM](https://arxiv.org/pdf/2406.07524)
 - [DiffuLLaMA](https://arxiv.org/abs/2410.17891)
 - [Block Diffusion](https://arxiv.org/abs/2503.09573)
-
-
-## 💬 Discussion
-
-Please do not hesitate to report any issues or difficulties you encounter.
-
-
-
-
-
-
-

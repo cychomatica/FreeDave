@@ -25,10 +25,10 @@ rollout:
     draft_steps: 1 # 1, 2, 4, 8
     top_p: 1.0
     top_k: 0
-    remasking_strategy: "low_confidence_static" #"low_confidence_static""low_confidence_dynamic"
+    remasking_strategy: "low_confidence_static" # "low_confidence_static""low_confidence_dynamic"
     dynamic_threshold: 0.9
     start_with_think: False # if not reasoning model, set to False, otherwise True
     output_unmasking_history: True
-    fast_sampling_version: "NA" # "NA", "v0" or "v1"
+    fast_sampling_version: "v0" # "v0" or "v1"
     eager_acceptance_mode: False # True or False
 

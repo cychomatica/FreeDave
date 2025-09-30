@@ -1,5 +1,5 @@
 import torch
-from generate.llada_generate import generate_with_prefix_cache, generate_with_prefix_cache_FreeDave
+from generate.llada_generate import block_diffusion_generate, block_diffusion_generate_FreeDave
 from modeling.llada.modeling_llada import LLaDAModelLM
 from transformers import AutoTokenizer
 from utils.monitor_utils import ForwardHookCounter
@@ -35,7 +35,7 @@ if __name__ == "__main__":
         unmask_threshold = config.rollout.dynamic_threshold
 
     if config.rollout.draft_steps > 1:
-        generate_func = partial(generate_with_prefix_cache_FreeDave, 
+        generate_func = partial(block_diffusion_generate_FreeDave, 
                                 model=model,
                                 steps=config.rollout.steps,
                                 draft_steps=config.rollout.draft_steps,
@@ -50,7 +50,7 @@ if __name__ == "__main__":
                                 )
         cprint('Evaluating {} on {}.\nUsing FreeDave ({}) with draft steps={}'.format(os.path.basename(model_path), dataset, config.rollout.remasking_strategy, config.rollout.draft_steps), color='green')
     else:
-        generate_func = partial(generate_with_prefix_cache, 
+        generate_func = partial(block_diffusion_generate, 
                                 model=model,
                                 steps=config.rollout.steps,
                                 gen_length=config.rollout.max_gen_length,

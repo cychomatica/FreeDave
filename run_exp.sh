@@ -2,11 +2,10 @@
 
 # DATASETS=("MATH500" "GSM8K" "AIME2024")
 # MODELS=("Gen-Verse/TraDo-4B-Instruct" "Gen-Verse/TraDo-8B-Instruct" "Gen-Verse/TraDo-8B-Thinking" "JetLM/SDAR-4B-Chat" "JetLM/SDAR-8B-Chat" "Dream-org/Dream-v0-Instruct-7B" "GSAI-ML/LLaDA-8B-Instruct")
-# FAST_SAMPLING_METHODS=("NA" "Naive" "Dynamic" "FreeDave" "FreeDave++")
-# NOTE: FreeDave++ currently only supports TraDo models
+# FAST_SAMPLING_METHODS=("NA" "Dynamic" "FreeDave")
 
-MODEL="Dream-org/Dream-v0-Instruct-7B"
-DATASET="GSM8K"
+MODEL="Gen-Verse/TraDo-4B-Instruct"
+DATASET="MATH500"
 FAST_SAMPLING_METHOD="FreeDave"
 
 echo "Running $MODEL on $DATASET"
@@ -28,10 +27,7 @@ then
     DENOISING_STEPS_PER_BLOCK=4
     EAGER_ACCEPTANCE_MODE=False
 
-    if [[ "$FAST_SAMPLING_METHOD" == "Naive" ]];
-    then
-        DENOISING_STEPS_PER_BLOCK=2
-    elif [[ "$FAST_SAMPLING_METHOD" == "Dynamic" ]];
+    if [[ "$FAST_SAMPLING_METHOD" == "Dynamic" ]];
     then
         REMASKING_STRATEGY="low_confidence_dynamic"
         K=0

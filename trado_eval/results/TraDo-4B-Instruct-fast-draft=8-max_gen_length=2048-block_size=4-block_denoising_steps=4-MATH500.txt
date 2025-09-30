@@ -1,4 +1,0 @@
-acc: 0.752
-avg length: 658.644
-avg time: 38.11545732593537
-avg nfe: 1083.102

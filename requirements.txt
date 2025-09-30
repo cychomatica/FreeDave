@@ -22,11 +22,12 @@ huggingface-hub
 omegaconf
 liger_kernel
 termcolor
-asyncio
 nest_asyncio
 ipykernel
 math_verify
 
-
-wandb
-tensorboard
+jinja2
+regex
+sympy
+einops
+typing_extensions

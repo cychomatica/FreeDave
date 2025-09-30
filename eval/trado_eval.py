@@ -1,6 +1,6 @@
 import torch
 from transformers import AutoModelForCausalLM, AutoTokenizer
-from generate.trado_generate import block_diffusion_generate, block_diffusion_generate_FreeDave, block_diffusion_generate_FreeDave_v1, block_diffusion_generate_FreeDave_v1_debug
+from generate.trado_generate import block_diffusion_generate, block_diffusion_generate_FreeDave
 from utils.monitor_utils import ForwardHookCounter
 
 import time, json, os
@@ -25,37 +25,27 @@ if __name__ == '__main__':
     nfe_counter = ForwardHookCounter(model)
     
     if config.rollout.draft_steps > 1 and config.rollout.fast_sampling_version != 'NA':
-        if config.rollout.fast_sampling_version == 'v1' or config.rollout.draft_steps > config.rollout.denoising_steps_per_block:
-            generate_func = partial(block_diffusion_generate_FreeDave_v1, 
-                                    model=model,
-                                    mask_id=151669,
-                                    gen_length=config.rollout.max_token,
-                                    block_length=config.rollout.block_size,
-                                    denoising_steps=config.rollout.denoising_steps_per_block,
-                                    draft_steps=config.rollout.draft_steps,
-                                    temperature=config.rollout.temperature,
-                                    top_k=config.rollout.top_k,
-                                    top_p=config.rollout.top_p,
-                                    remasking_strategy=config.rollout.remasking_strategy,
-                                    confidence_threshold=config.rollout.dynamic_threshold,
-                                    eager_acceptance_mode=config.rollout.eager_acceptance_mode,
-                                    )
-            cprint('Evaluating {} on {}.\nUsing FreeDave++ ({}, eager acceptance {}) with draft steps={}'.format(os.path.basename(model_path), dataset, config.rollout.remasking_strategy, 'enabled' if config.rollout.eager_acceptance_mode else 'disabled', config.rollout.draft_steps), color='green')
-        else:
-            generate_func = partial(block_diffusion_generate_FreeDave, 
-                                    model=model,
-                                    mask_id=151669,
-                                    gen_length=config.rollout.max_token,
-                                    block_length=config.rollout.block_size,
-                                    denoising_steps=config.rollout.denoising_steps_per_block,
-                                    draft_steps=config.rollout.draft_steps,
-                                    temperature=config.rollout.temperature,
-                                    top_k=config.rollout.top_k,
-                                    top_p=config.rollout.top_p,
-                                    remasking_strategy=config.rollout.remasking_strategy,
-                                    confidence_threshold=config.rollout.dynamic_threshold,
-                                    )
-            cprint('Evaluating {} on {}.\nUsing FreeDave ({}) with draft steps={}'.format(os.path.basename(model_path), dataset, config.rollout.remasking_strategy, config.rollout.draft_steps), color='green')
+        generate_func = partial(block_diffusion_generate_FreeDave, 
+                                model=model,
+                                mask_id=151669,
+                                gen_length=config.rollout.max_token,
+                                block_length=config.rollout.block_size,
+                                denoising_steps=config.rollout.denoising_steps_per_block,
+                                draft_steps=config.rollout.draft_steps,
+                                temperature=config.rollout.temperature,
+                                top_k=config.rollout.top_k,
+                                top_p=config.rollout.top_p,
+                                remasking_strategy=config.rollout.remasking_strategy,
+                                confidence_threshold=config.rollout.dynamic_threshold,
+                                eager_acceptance_mode=config.rollout.eager_acceptance_mode,
+                                )
+        cprint('Evaluating {} on {}.\nUsing FreeDave ({}, eager acceptance {}) with draft steps={}'.format(
+            os.path.basename(model_path), 
+            dataset, 
+            config.rollout.remasking_strategy, 
+            'enabled' if config.rollout.eager_acceptance_mode else 'disabled', 
+            config.rollout.draft_steps), 
+            color='green')
     else:
         generate_func = partial(block_diffusion_generate, 
                                 model=model,
