@@ -6,7 +6,7 @@ experiment:
 
 
 
-model: "/abs/path/of/model" # absolute path of your model
+model: "JetLM/SDAR-4B-Chat" # absolute path of your model
 model_base: "sdar" # set sdar for TraDo and SDAR
 
 
@@ -27,10 +27,10 @@ rollout:
     block_size: 4
     denoising_steps_per_block: 4
     top_p: 1.0
-    top_k: 0
-    remasking_strategy: "low_confidence_dynamic" #"low_confidence_static""low_confidence_dynamic"
+    top_k: 1
+    remasking_strategy: "low_confidence_static" #"low_confidence_static""low_confidence_dynamic"
     dynamic_threshold: 0.9
     start_with_think: False # if not reasoning model, set to False, otherwise True
     output_unmasking_history: True
-
+    fast_sampling_version: "v0" # "v1" or "v0"
 
