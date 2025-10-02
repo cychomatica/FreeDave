@@ -82,7 +82,7 @@ FreeDave is designed base on static sampling with greedy decoding, but also comp
 ```
 @article{wu2025free,
   title={Free Draft-and-Verification: Toward Lossless Parallel Decoding for Diffusion Large Language Models}, 
-  author={Wu, Shutong Zhang, Jiawei},
+  author={Wu, Shutong and Zhang, Jiawei},
   journal={arXiv preprint arXiv:2510.00294},
   year={2025}
 }
