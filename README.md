@@ -2,7 +2,7 @@
 <br>
 <h3>Free Draft-and-Verification: Toward Lossless Parallel Decoding for Diffusion Large Language Models</h3>
 <p align="center">
-  <a href="#">
+  <a href="https://arxiv.org/abs/2510.00294">
     <img
       src="https://img.shields.io/badge/Paper-Arxiv-red?logo=arxiv&logoColor=red"
       alt="CURE Paper on arXiv"
@@ -66,11 +66,8 @@ python -m eval.trado_eval config=configs/trado_eval.yaml
 # see details in ./configs
 ```
 
-Use `configs/trado_eval.yaml` for TraDo models' inference, `configs/sdar_eval.yaml` for SDAR, and `configs/dream_eval.yaml` for Dream. A example script `run_exp.sh` is also provided for reference. 
+Use `configs/trado_eval.yaml` for TraDo, `configs/sdar_eval.yaml` for SDAR, and `configs/dream_eval.yaml` for Dream. A example script `run_exp.sh` is also provided for reference. 
 
-<!-- Instructions on how to set the configurations are provided in the corresponding configuration files.   -->
-
-<!-- We support both general tasks and coding tasks (including automated execution of code) in evaluation.   -->
 
 There are two main sampling methods you can choose:
 
@@ -83,13 +80,10 @@ FreeDave is designed base on static sampling with greedy decoding, but also comp
 ## Citation
 
 ```
-@article{
-  ...
-}
-@article{wang2025trado,
-  title={Revolutionizing Reinforcement Learning Framework for Diffusion Large Language Models},
-  author={Wang, Yinjie and Yang, Ling and Li, Bowen and Tian, Ye and Shen, Ke and Wang, Mengdi},
-  journal={arXiv preprint arXiv:2509.06949},
+@article{wu2025free,
+  title={Free Draft-and-Verification: Toward Lossless Parallel Decoding for Diffusion Large Language Models}, 
+  author={Wu, Shutong Zhang, Jiawei},
+  journal={arXiv preprint arXiv:2510.00294},
   year={2025}
 }
 ```
