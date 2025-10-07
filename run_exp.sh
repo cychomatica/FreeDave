@@ -33,10 +33,6 @@ then
         K=0
     elif [[ "$FAST_SAMPLING_METHOD" == "FreeDave" ]];
     then
-        DRAFT_STEPS=4
-        FAST_SAMPLING_VERSION="v0"
-    elif [[ "$FAST_SAMPLING_METHOD" == "FreeDave++" ]];
-    then
         DRAFT_STEPS=8
         FAST_SAMPLING_VERSION="v1"
         EAGER_ACCEPTANCE_MODE=True
@@ -74,12 +70,9 @@ then
         K=0
     elif [[ "$FAST_SAMPLING_METHOD" == "FreeDave" ]];
     then
-        DRAFT_STEPS=4
-        FAST_SAMPLING_VERSION="v0"
-    elif [[ "$FAST_SAMPLING_METHOD" == "FreeDave++" ]];
-    then
         DRAFT_STEPS=8
         FAST_SAMPLING_VERSION="v1"
+        EAGER_ACCEPTANCE_MODE=True
     fi
 
     python -m eval.trado_eval \
