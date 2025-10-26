@@ -5,7 +5,7 @@ from utils.monitor_utils import ForwardHookCounter
 
 import time, json, os
 from functools import partial
-from utils.eval_utils import data_prepare, output_process, get_token_lengths, reward, get_config
+from utils.eval_utils import data_prepare, output_process, get_token_lengths, reward, get_config, execute
 from tqdm import tqdm
 from termcolor import cprint
 
@@ -98,7 +98,6 @@ if __name__ == '__main__':
     cprint('Generation done!', color='green')
     cprint('Avg throughput (tokens/s): {}'.format(total_response_tokens / total_sampling_time), color='green')
     cprint('Avg throughput (tokens/nfe): {}'.format(total_response_tokens / total_nfe), color='green')
-
     data = output_process(config.dataset.data_type, data)
 
     save_dir = os.path.join('exp_results', config.experiment.project, 'temp_data')
@@ -110,5 +109,10 @@ if __name__ == '__main__':
     
     with open(os.path.join(save_dir, save_filename), 'w') as f:
         json.dump(data, f, indent=4)
+    
+    if config.dataset.data_type == 'code':
+        cprint(f"\ncode execution started", color = "yellow")
+        execute(config, save_dir, save_filename)
+        cprint(f"code execution completed\n", color = "yellow")
 
     reward(config, save_dir, save_filename)

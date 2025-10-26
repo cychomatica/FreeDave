@@ -7,7 +7,7 @@ from utils.monitor_utils import ForwardHookCounter
 
 import time, json, os
 from functools import partial
-from utils.eval_utils import data_prepare, output_process, reward, get_token_lengths, get_config
+from utils.eval_utils import data_prepare, output_process, reward, get_token_lengths, get_config, execute
 from tqdm import tqdm
 from termcolor import cprint
 
@@ -127,5 +127,10 @@ if __name__ == "__main__":
     
     with open(os.path.join(save_dir, save_filename), 'w') as f:
         json.dump(data, f, indent=4)
+
+    if config.dataset.data_type == 'code':
+        cprint(f"\ncode execution started", color = "yellow")
+        execute(config, save_dir, save_filename)
+        cprint(f"code execution completed\n", color = "yellow")
 
     reward(config, save_dir, save_filename)

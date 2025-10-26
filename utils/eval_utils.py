@@ -1,3 +1,5 @@
+# built on https://github.com/Gen-Verse/dLLM-RL/blob/main/reward/reward.py
+
 import json
 from jinja2 import Template
 from termcolor import cprint
@@ -8,6 +10,7 @@ from utils import math_utils
 from omegaconf import OmegaConf
 import os
 import re
+import subprocess
 
 def get_config():
     cli_conf = OmegaConf.from_cli()
@@ -25,12 +28,17 @@ def get_system_prompts(model_base='trado', data_type='math', start_with_think=Fa
         system_prompts_stdio = '''<|im_start|>user\nThis is the problem:\n{{problem}}\nYou should put your code in ```python ```. Use input() to read input and print() to produce output in your script. <|im_end|>\n<|im_start|>assistant\n'''
         if start_with_think:
             system_prompts_stdio = '''<|im_start|>user\nThis is the problem:\n{{problem}}\nYou should put your code in ```python ```. Use input() to read input and print() to produce output in your script. <|im_end|>\n<|im_start|>assistant<think>\n'''
+        system_prompts = {
+            'function': system_prompts_function,
+            'stdio': system_prompts_stdio
+        }
     elif data_type == 'option':
-        # if model_base == 'trado':
+        code_eval = False
         system_prompts = '''<|im_start|>user\nThis is the problem:\n{{problem}}\nYou need to think step by step and put the final option (A, B, C, or D only—no other character) in \\boxed{}. <|im_end|>\n<|im_start|>assistant\n'''
         if start_with_think:
             system_prompts = '''<|im_start|>user\nThis is the problem:\n{{problem}}\nYou need to think step by step and put the final option (A, B, C, or D only—no other character) in \\boxed{}. <|im_end|>\n<|im_start|>assistant<think>\n'''
     else:
+        code_eval = False
         if model_base in ['trado', 'sdar']:
             system_prompts = '''<|im_start|>user\n{{problem}}\nPlease reason step by step, and put your final answer within \\boxed{}.<|im_end|>\n<|im_start|>assistant\n'''
             if start_with_think:
@@ -40,7 +48,7 @@ def get_system_prompts(model_base='trado', data_type='math', start_with_think=Fa
         else:
             system_prompts = '''<|startoftext|><|start_header_id|>user<|end_header_id|>You need to put your final answer in \\boxed{}. This is the problem:\n{{problem}}<|eot_id|><|startoftext|><|start_header_id|>assistant<|end_header_id|>\n'''
 
-    return system_prompts
+    return system_prompts, code_eval
 
 def get_token_lengths(strings, tokenizer):
     pad_token = tokenizer.pad_token
@@ -63,19 +71,33 @@ def data_prepare(model_base, data_type, data_path, start_with_think=False):
     with open(data_path, 'r') as f:
         data = json.load(f)
 
-    system_prompts = get_system_prompts(model_base, data_type, start_with_think)
+    system_prompts, code_eval = get_system_prompts(model_base, data_type, start_with_think)
 
     for i in range(len(data)):
-        data[i]['prompt'] = get_prompt(data[i], system_prompts)
-        data[i]['full_output'] = []
-        data[i]['cleaned_output'] = []
-        data[i]['extracted_output'] = []
-        data[i]['step_map'] = []
-        data[i]['response_tokens'] = []
-        # data[i]['response_length'] = []
-        data[i]['response_time'] = []
-        data[i]['response_nfe'] = []
-        
+
+        if data_type in ['math', 'option']:
+            data[i]['prompt'] = get_prompt(data[i], system_prompts)
+            data[i]['full_output'] = []
+            data[i]['cleaned_output'] = []
+            data[i]['extracted_output'] = []
+            data[i]['step_map'] = []
+            data[i]['response_tokens'] = []
+            data[i]['response_time'] = []
+            data[i]['response_nfe'] = []
+        elif data_type == 'code':
+            if data[i]["test_method"] == "stdio":
+                data[i]['prompt'] = get_prompt(data[i], system_prompts['stdio'])
+            else:
+                data[i]['prompt'] = get_prompt(data[i], system_prompts['function'])
+            data[i]['full_output'] = []
+            data[i]['cleaned_output'] = []
+            data[i]['extracted_output'] = []
+            data[i]['step_map'] = []
+            data[i]['response_tokens'] = []
+            data[i]['response_time'] = []
+            data[i]['response_nfe'] = []
+        else:
+            raise ValueError(f"Invalid data type: {data_type}")
     
     return data
 
@@ -102,19 +124,24 @@ def extract_final_boxed_answer(s: str):
 
     return ''.join(buf) if depth == 0 else 'Can not extract the answer!'
 
+def extract_code(full_output):
+    matches = re.findall(r"```python(.*?)```", full_output, re.DOTALL)
+    if matches:
+        code_output = matches[-1].strip()
+    else:
+        code_output = "We can not extract the code in the output. "
+    return code_output
+
 def output_process(data_type, data):
     for i in range(len(data)):
         for each_output in data[i]['full_output']:
-            data[i]['extracted_output'].append(extract_final_boxed_answer(each_output))
+            if data_type == 'code':
+                data[i]['extracted_output'].append(extract_code(each_output))
+            else:
+                data[i]['extracted_output'].append(extract_final_boxed_answer(each_output))
     return data
 
 def reward(config, outputs_dir, outputs_filename):
-
-    project_name = config.experiment.project
-
-    # sampling_mode = 'normal' if config.rollout.draft_steps == 1 else f'fast-draft={config.rollout.draft_steps}'
-    # outputs_name = f'{pretrained_model}-{sampling_mode}-block_size={config.rollout.block_size}-block_denoising_steps={config.rollout.denoising_steps_per_block}-{dataset}.json'
-    # outputs_dir = os.path.join(project_name, 'temp_data')
 
     with open(os.path.join(outputs_dir, outputs_filename), 'r') as f:
         data = json.load(f)
@@ -126,8 +153,6 @@ def reward(config, outputs_dir, outputs_filename):
     response_time_list = []
     response_nfe_list = []
     for i in range(len(data)):
-        
-        # response_length_list = response_length_list + data[i]['response_length']
         response_time_list = response_time_list + data[i]['response_time']
         response_nfe_list = response_nfe_list + data[i]['response_nfe']
         response_length_list = response_length_list + data[i]['response_tokens']
@@ -136,8 +161,11 @@ def reward(config, outputs_dir, outputs_filename):
         if config.dataset.data_type == 'math':
             data[i]['correctness'] = []
             ground_truth_list = ground_truth_list + [data[i]['ground_truth_answer']] * len(data[i]['extracted_output'])
+        elif config.dataset.data_type == 'option':
+            data[i]['correctness'] = []
+            ground_truth_list = ground_truth_list + [data[i]['answer']] * len(data[i]['extracted_output'])
 
-    if config.dataset.data_type == 'math':
+    if config.dataset.data_type in ['math', 'option']:
 
         nest_asyncio.apply()
 
@@ -167,7 +195,7 @@ def reward(config, outputs_dir, outputs_filename):
         new_lst[-t:] = [new_val] * t
         return new_lst
 
-    if config.dataset.data_type == 'math':
+    if config.dataset.data_type in ['math', 'option']:
         acc = sum(correctness_list)/len(correctness_list)
     else:
         num_task   = 0
@@ -199,6 +227,17 @@ def reward(config, outputs_dir, outputs_filename):
         avg_nfe = sum(response_nfe_list)/len(response_nfe_list)
 
         save_and_print(f'acc: {acc}\navg length: {avg_len}\navg time: {avg_time}\navg nfe: {avg_nfe}')
+
+def execute(config, outputs_dir, outputs_filename):
+    subprocess.run(
+        f'python utils/code_execution.py '
+        f'--outputs_dir {outputs_dir} '
+        f'--outputs_filename {outputs_filename} '
+        f'--num_chunk {config.execute.num_chunk} ',
+        shell=True,
+        cwd='./',
+        check=True,
+    )
 
 if __name__ == '__main__':
     config = get_config()

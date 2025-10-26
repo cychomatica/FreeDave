@@ -68,6 +68,7 @@ python -m eval.trado_eval config=configs/trado_eval.yaml
 
 Use `configs/trado_eval.yaml` for TraDo, `configs/sdar_eval.yaml` for SDAR, and `configs/dream_eval.yaml` for Dream. A example script `run_exp.sh` is also provided for reference.
 
+
 There are two main sampling methods you can choose:
 
 - **Static Sampling:** unmask fixed number of tokens each time

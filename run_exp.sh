@@ -1,12 +1,26 @@
 #! /bin/bash
 
-# DATASETS=("MATH500" "GSM8K" "AIME2024")
+# DATASETS=("MATH500" "GSM8K" "AIME2024" "MBPP" "HumanEval" "MMLU-Pro")
 # MODELS=("Gen-Verse/TraDo-4B-Instruct" "Gen-Verse/TraDo-8B-Instruct" "Gen-Verse/TraDo-8B-Thinking" "JetLM/SDAR-4B-Chat" "JetLM/SDAR-8B-Chat" "Dream-org/Dream-v0-Instruct-7B")
 # FAST_SAMPLING_METHODS=("NA" "Dynamic" "FreeDave")
 
 MODEL="Gen-Verse/TraDo-4B-Instruct"
 DATASET="MATH500"
 FAST_SAMPLING_METHOD="FreeDave"
+
+if [[ "$DATASET" == "MMLU-Pro" ]];
+then
+DATA_TYPE="option"
+elif [[ "$DATASET" == "MATH500" || "$DATASET" == "GSM8K" || "$DATASET" == "AIME2024" ]];
+then
+DATA_TYPE="math"
+elif [[ "$DATASET" == "MBPP" || "$DATASET" == "HumanEval" ]];
+then
+DATA_TYPE="code"
+else
+    echo "Error: Dataset $DATASET not supported yet."
+    exit 1
+fi
 
 echo "Running $MODEL on $DATASET"
 echo "Fast sampling method: $FAST_SAMPLING_METHOD"
@@ -34,10 +48,6 @@ then
     elif [[ "$FAST_SAMPLING_METHOD" == "FreeDave" ]];
     then
         DRAFT_STEPS=4
-        FAST_SAMPLING_VERSION="v0"
-    elif [[ "$FAST_SAMPLING_METHOD" == "FreeDave++" ]];
-    then
-        DRAFT_STEPS=8
         FAST_SAMPLING_VERSION="v1"
         EAGER_ACCEPTANCE_MODE=True
     fi
@@ -53,7 +63,8 @@ then
     rollout.top_k=$K \
     rollout.remasking_strategy=$REMASKING_STRATEGY \
     rollout.fast_sampling_version=$FAST_SAMPLING_VERSION \
-    rollout.eager_acceptance_mode=$EAGER_ACCEPTANCE_MODE
+    rollout.eager_acceptance_mode=$EAGER_ACCEPTANCE_MODE \
+    dataset.data_type=$DATA_TYPE
 
 elif [[ "$MODEL" == "JetLM/SDAR-4B-Chat" || "$MODEL" == "JetLM/SDAR-8B-Chat" ]]; 
 then
@@ -65,21 +76,15 @@ then
     DRAFT_STEPS=1
     DENOISING_STEPS_PER_BLOCK=4
 
-    if [[ "$FAST_SAMPLING_METHOD" == "Naive" ]];
-    then
-        DENOISING_STEPS_PER_BLOCK=2
-    elif [[ "$FAST_SAMPLING_METHOD" == "Dynamic" ]];
+    if [[ "$FAST_SAMPLING_METHOD" == "Dynamic" ]];
     then
         REMASKING_STRATEGY="low_confidence_dynamic"
         K=0
     elif [[ "$FAST_SAMPLING_METHOD" == "FreeDave" ]];
     then
-        DRAFT_STEPS=4
-        FAST_SAMPLING_VERSION="v0"
-    elif [[ "$FAST_SAMPLING_METHOD" == "FreeDave++" ]];
-    then
         DRAFT_STEPS=8
         FAST_SAMPLING_VERSION="v1"
+        EAGER_ACCEPTANCE_MODE=True
     fi
 
     python -m eval.trado_eval \
@@ -92,7 +97,9 @@ then
     rollout.draft_steps=$DRAFT_STEPS \
     rollout.top_k=$K \
     rollout.remasking_strategy=$REMASKING_STRATEGY \
-    rollout.fast_sampling_version=$FAST_SAMPLING_VERSION
+    rollout.fast_sampling_version=$FAST_SAMPLING_VERSION \
+    rollout.eager_acceptance_mode=$EAGER_ACCEPTANCE_MODE \
+    dataset.data_type=$DATA_TYPE
 
 elif [[ "$MODEL" == "Dream-org/Dream-v0-Instruct-7B" ]]; 
 then
@@ -104,10 +111,7 @@ then
     DRAFT_STEPS=1
     BLOCK_SIZE=32
 
-    if [[ "$FAST_SAMPLING_METHOD" == "Naive" ]];
-    then
-        STEPS=800
-    elif [[ "$FAST_SAMPLING_METHOD" == "Dynamic" ]];
+    if [[ "$FAST_SAMPLING_METHOD" == "Dynamic" ]];
     then
         K=0
         REMASKING_STRATEGY="low_confidence_dynamic"
@@ -126,7 +130,8 @@ then
     rollout.block_size=$BLOCK_SIZE \
     rollout.draft_steps=$DRAFT_STEPS \
     rollout.top_k=$K \
-    rollout.remasking_strategy=$REMASKING_STRATEGY
+    rollout.remasking_strategy=$REMASKING_STRATEGY \
+    dataset.data_type=$DATA_TYPE
 
 else
     echo "Error: Model $MODEL not supported yet."
