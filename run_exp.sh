@@ -6,7 +6,7 @@
 
 MODEL="Gen-Verse/TraDo-4B-Instruct"
 DATASET="MATH500"
-FAST_SAMPLING_METHOD="FreeDave"
+FAST_SAMPLING_METHOD="Dynamic"
 
 if [[ "$DATASET" == "MMLU-Pro" ]];
 then
@@ -47,7 +47,7 @@ then
         K=0
     elif [[ "$FAST_SAMPLING_METHOD" == "FreeDave" ]];
     then
-        DRAFT_STEPS=4
+        DRAFT_STEPS=16
         FAST_SAMPLING_VERSION="v1"
         EAGER_ACCEPTANCE_MODE=True
     fi

@@ -1,0 +1,17 @@
+/home/shutongw/miniconda3/envs/lm/lib/python3.10/site-packages/flash_attn/ops/triton/layer_norm.py:959: FutureWarning: `torch.cuda.amp.custom_fwd(args...)` is deprecated. Please use `torch.amp.custom_fwd(args..., device_type='cuda')` instead.
+  def forward(
+/home/shutongw/miniconda3/envs/lm/lib/python3.10/site-packages/flash_attn/ops/triton/layer_norm.py:1018: FutureWarning: `torch.cuda.amp.custom_bwd(args...)` is deprecated. Please use `torch.amp.custom_bwd(args..., device_type='cuda')` instead.
+  def backward(ctx, dout, *args):
+🚨 `store_kv` is part of SDARModel.forward's signature, but not documented. Make sure to add it to the docstring of the function in /home/shutongw/.cache/huggingface/modules/transformers_modules/Gen-Verse/TraDo-4B-Instruct/69928229b67aeb72ca17d8feab568ebdc38b28ba/modeling_sdar.py.
+Loading checkpoint shards: 100%|██████████████████████████████████████████████████████████████████████████████████████████████████████████████| 2/2 [00:06<00:00,  3.40s/it]
+[32mEvaluating TraDo-4B-Instruct on MATH500.
+Using FreeDave (low_confidence_static, eager acceptance enabled) with draft steps=4[0m
+100%|███████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████████| 500/500 [6:17:04<00:00, 45.25s/it]
+[32mGeneration done![0m
+[32mAvg throughput (tokens/s): 14.756142348368963[0m
+[32mAvg throughput (tokens/nfe): 0.4951635567465116[0m
+[32m**********eval results**********
+acc: 0.72
+avg length: 666.71
+avg time: 45.18186286497116
+avg nfe: 1346.444[0m

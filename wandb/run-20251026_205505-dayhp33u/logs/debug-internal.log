@@ -1,0 +1,18 @@
+{"time":"2025-10-26T20:55:05.846898833Z","level":"INFO","msg":"using version","core version":"0.18.5"}
+{"time":"2025-10-26T20:55:05.846927179Z","level":"INFO","msg":"created symlink","path":"/home/shutongw/code/dLLM-RL/wandb/run-20251026_205505-dayhp33u/logs/debug-core.log"}
+{"time":"2025-10-26T20:55:06.068205314Z","level":"INFO","msg":"created new stream","id":"dayhp33u"}
+{"time":"2025-10-26T20:55:06.06828759Z","level":"INFO","msg":"stream: started","id":"dayhp33u"}
+{"time":"2025-10-26T20:55:06.068542721Z","level":"INFO","msg":"sender: started","stream_id":"dayhp33u"}
+{"time":"2025-10-26T20:55:06.068432075Z","level":"INFO","msg":"writer: Do: started","stream_id":{"value":"dayhp33u"}}
+{"time":"2025-10-26T20:55:06.068674695Z","level":"INFO","msg":"handler: started","stream_id":{"value":"dayhp33u"}}
+{"time":"2025-10-26T20:55:06.295975177Z","level":"INFO","msg":"Starting system monitor"}
+{"time":"2025-10-27T03:12:21.149107335Z","level":"INFO","msg":"stream: closing","id":"dayhp33u"}
+{"time":"2025-10-27T03:12:21.14917478Z","level":"INFO","msg":"Stopping system monitor"}
+{"time":"2025-10-27T03:12:21.150875927Z","level":"INFO","msg":"Stopped system monitor"}
+{"time":"2025-10-27T03:12:21.194390398Z","level":"WARN","msg":"No program path found, not creating job artifact. See https://docs.wandb.ai/guides/launch/create-job"}
+{"time":"2025-10-27T03:12:21.194441012Z","level":"INFO","msg":"sender: sendDefer: no job artifact to save"}
+{"time":"2025-10-27T03:12:21.472090014Z","level":"INFO","msg":"fileTransfer: Close: file transfer manager closed"}
+{"time":"2025-10-27T03:12:21.565878184Z","level":"INFO","msg":"handler: closed","stream_id":{"value":"dayhp33u"}}
+{"time":"2025-10-27T03:12:21.565948414Z","level":"INFO","msg":"sender: closed","stream_id":"dayhp33u"}
+{"time":"2025-10-27T03:12:21.565947521Z","level":"INFO","msg":"writer: Close: closed","stream_id":{"value":"dayhp33u"}}
+{"time":"2025-10-27T03:12:21.566126582Z","level":"INFO","msg":"stream: closed","id":"dayhp33u"}

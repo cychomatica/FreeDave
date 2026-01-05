@@ -1,0 +1,11 @@
+**/__pycache__/
+_history/
+.vscode/
+exp_results
+chat_examples/llada_chat_example.py
+eval/llada_eval.py
+generate/llada_generate.py
+configs/readme.md
+data/preprocess_sft.ipynb
+data/readme.md
+*.json

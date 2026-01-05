@@ -8,6 +8,7 @@ from functools import partial
 from utils.eval_utils import data_prepare, output_process, get_token_lengths, reward, get_config, execute
 from tqdm import tqdm
 from termcolor import cprint
+import wandb
 
 if __name__ == '__main__':
     config = get_config()
@@ -16,6 +17,10 @@ if __name__ == '__main__':
     dataset = config.dataset.eval_dataset
     data_path = 'data/' + dataset + '.json'
     data = data_prepare(config.model_base, config.dataset.data_type, data_path, config.rollout.start_with_think)
+
+    sampling_mode = 'normal' if config.rollout.draft_steps == 1 else 'fast-draft={}'.format(config.rollout.draft_steps)
+    remasking_strategy = 'static' if config.rollout.remasking_strategy == "low_confidence_static" else 'dynamic'
+    wandb.init(project='freedave', name='{}-{}-{}-max_gen_length={}-block_size={}-block_denoising_steps={}-{}'.format(os.path.basename(config.model), sampling_mode, remasking_strategy, config.rollout.max_token, config.rollout.block_size, config.rollout.denoising_steps_per_block, dataset))
 
     model_path = config.model
     model = AutoModelForCausalLM.from_pretrained(
@@ -100,11 +105,19 @@ if __name__ == '__main__':
     cprint('Avg throughput (tokens/nfe): {}'.format(total_response_tokens / total_nfe), color='green')
     data = output_process(config.dataset.data_type, data)
 
+    wandb.log({
+        'avg_response_tokens': total_response_tokens / len(data),
+        'avg_response_time': total_sampling_time / len(data),
+        'avg_response_nfe': total_nfe / len(data),
+        'avg_throughput(tokens/s)': total_response_tokens / total_sampling_time,
+        'avg_throughput(tokens/nfe)': total_response_tokens / total_nfe,
+    })
+
     save_dir = os.path.join('exp_results', config.experiment.project, 'temp_data')
     os.makedirs(save_dir, exist_ok=True)
 
-    sampling_mode = 'normal' if config.rollout.draft_steps == 1 else 'fast-draft={}'.format(config.rollout.draft_steps)
-    remasking_strategy = 'static' if config.rollout.remasking_strategy == "low_confidence_static" else 'dynamic'
+    # sampling_mode = 'normal' if config.rollout.draft_steps == 1 else 'fast-draft={}'.format(config.rollout.draft_steps)
+    # remasking_strategy = 'static' if config.rollout.remasking_strategy == "low_confidence_static" else 'dynamic'
     save_filename = '{}-{}-{}-max_gen_length={}-block_size={}-block_denoising_steps={}-{}.json'.format(os.path.basename(model_path), sampling_mode, remasking_strategy, config.rollout.max_token, config.rollout.block_size, config.rollout.denoising_steps_per_block, dataset)
     
     with open(os.path.join(save_dir, save_filename), 'w') as f:
