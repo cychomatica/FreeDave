@@ -7,6 +7,7 @@ from modeling.dream.modeling_dream import DreamModel
 from utils.monitor_utils import ForwardHookCounter
 from termcolor import cprint
 
+from utils.determinism_utils import deterministic
 
 if __name__ == '__main__':
         

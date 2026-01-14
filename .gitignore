@@ -9,3 +9,4 @@ configs/readme.md
 data/preprocess_sft.ipynb
 data/readme.md
 *.json
+wandb/

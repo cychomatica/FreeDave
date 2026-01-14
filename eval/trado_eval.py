@@ -10,10 +10,9 @@ from tqdm import tqdm
 from termcolor import cprint
 import wandb
 
-if __name__ == '__main__':
-    config = get_config()
-    cprint('Experiment config:\n{}'.format(config), color='green')
+from utils.determinism_utils import setup_determinism, deterministic
 
+def main(config):
     dataset = config.dataset.eval_dataset
     data_path = 'data/' + dataset + '.json'
     data = data_prepare(config.model_base, config.dataset.data_type, data_path, config.rollout.start_with_think)
@@ -26,6 +25,7 @@ if __name__ == '__main__':
     model = AutoModelForCausalLM.from_pretrained(
         model_path, trust_remote_code=True, torch_dtype='float16', device_map='cuda'
     )
+    model.eval()
     tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
     nfe_counter = ForwardHookCounter(model)
     
@@ -69,17 +69,20 @@ if __name__ == '__main__':
     total_sampling_time = 0
     total_response_tokens = 0
     total_nfe = 0
-    for i in tqdm(range(len(data))):
-        prompt = data[i]['prompt']
-        messages = [{'role': 'user', 'content': prompt}]
-        text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
-        tokens = tokenizer.batch_encode_plus([text], return_tensors='pt', padding=True, truncation=True, max_length=200)
-        tokens = {k: v.to(model.device) for k, v in tokens.items()}
+    total_accepted_steps = 0
+    total_draft_steps = 0
 
+    for i in tqdm(range(len(data))):        
+        prompt = data[i]['prompt']
+        # messages = [{'role': 'user', 'content': prompt}]
+        # text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
+        tokens = tokenizer.batch_encode_plus([prompt], return_tensors='pt', padding=True, truncation=True, max_length=200)
+        tokens = {k: v.to(model.device) for k, v in tokens.items()}
+        
         nfe_counter.reset_count()
         start_time = time.time()
         with nfe_counter.count_context():
-            output_ids = generate_func(prompt=tokens)
+            output_ids, accepted_steps, draft_steps = generate_func(prompt=tokens)
         end_time = time.time()
         sampling_time = end_time - start_time
         nfe = nfe_counter.counter.count
@@ -99,10 +102,14 @@ if __name__ == '__main__':
         total_sampling_time += sampling_time
         total_response_tokens += sum(data[i]['response_tokens'])
         total_nfe += nfe
+        total_accepted_steps += accepted_steps
+        total_draft_steps += draft_steps
 
     cprint('Generation done!', color='green')
     cprint('Avg throughput (tokens/s): {}'.format(total_response_tokens / total_sampling_time), color='green')
     cprint('Avg throughput (tokens/nfe): {}'.format(total_response_tokens / total_nfe), color='green')
+    if total_draft_steps > 0:
+        cprint('Avg acceptance rate: {}'.format(total_accepted_steps / total_draft_steps), color='green')
     data = output_process(config.dataset.data_type, data)
 
     wandb.log({
@@ -129,3 +136,9 @@ if __name__ == '__main__':
         cprint(f"code execution completed\n", color = "yellow")
 
     reward(config, save_dir, save_filename)
+
+if __name__ == '__main__':
+    config = get_config()
+    cprint('Experiment config:\n{}'.format(config), color='green')
+    with deterministic(enabled=config.experiment.deterministic, seed=config.experiment.seed):
+        main(config)

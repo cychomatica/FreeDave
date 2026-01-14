@@ -2,6 +2,8 @@ experiment:
     project: "dream_eval" # need to be same of this file name
     num_node: 1 # the number of machines you have
     node_index: 0 # no need to change
+    seed: 42
+    deterministic: True
 
 model: "Dream-org/Dream-v0-Instruct-7B" # absolute path of your model
 model_base: "dream" # set dream for Dream and Diffu-coder models
@@ -23,7 +25,7 @@ rollout:
     max_gen_length: 1024
     batch_size: 2
     top_p: 1.0
-    top_k: 1
+    top_k: 1 # 1 for low_confidence_static decoding, 0 for low_confidence_dynamic decoding
     remasking_strategy: "low_confidence_static" #"low_confidence_static""low_confidence_dynamic"
     target: "confidence" # target to decide which tokens to unmask, eg. confidence, margin_confidence and neg_entropy
     dynamic_threshold: 0.95 # no use for "low_confidence_static"

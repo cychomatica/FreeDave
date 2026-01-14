@@ -35,22 +35,27 @@ def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, target=None):
 
     if temperature > 0:
         logits = logits / temperature
+
+    raw_probs = F.softmax(logits, dim=-1)
+
     if top_p is not None and top_p < 1:
         logits = top_p_logits(logits, top_p)
     if top_k is not None:
         logits = top_k_logits(logits, top_k)
-    
-    dist = dists.Categorical(logits=logits)
-    x0 = dist.sample()
-    probs = dist.probs
+    probs = torch.softmax(logits, dim=-1)
+
+    if top_k == 1:
+        confidence, x0 = raw_probs.max(dim=-1)
+        return confidence, x0
 
     if temperature > 0:
-        target = probs.gather(-1, x0.unsqueeze(-1)).squeeze(-1)
+        try:
+            x0 = dists.Categorical(probs=probs).sample()
+            confidence = torch.gather(probs, -1, x0.unsqueeze(-1)).squeeze(-1)
+        except:
+            confidence, x0 = probs.max(dim=-1)
     else:
-        target, x0 = probs.max(dim=-1)
-    
-    if target == "confidence":
-        return target, x0
+        confidence, x0 = probs.max(dim=-1)
     
     if target == "margin_confidence":
         sorted_probs, _ = torch.sort(probs, dim=-1, descending=True)
@@ -59,14 +64,14 @@ def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, target=None):
         
         top2_probs = sorted_probs[:, 1]
         # Calculate confidence as top1 - top2
-        target = top1_probs - top2_probs 
+        confidence = top1_probs - top2_probs 
     
     if target == "neg_entropy":
         epsilon = 1e-10
         log_probs = torch.log(probs + epsilon)
-        target = torch.sum(probs * log_probs, dim=-1)
+        confidence = torch.sum(probs * log_probs, dim=-1)
     
-    return target, x0
+    return confidence, x0
 
 
 @dataclass
@@ -139,6 +144,9 @@ def block_diffusion_generate(
 
     # Initialize cache for the prompt
     past_key_values = None
+
+    if not use_cache:
+        cgws = None
 
     # Process each block
     for num_block in range(num_blocks):
@@ -214,22 +222,22 @@ def block_diffusion_generate(
             
             mask_index[:, block_length:] = False
             mask_logits = logits[mask_index]
-            target, x0 = sample_tokens(mask_logits, temperature, top_p=top_p, top_k=top_k, target=tar)
+            x0_p, x0 = sample_tokens(mask_logits, temperature, top_p=top_p, top_k=top_k, target=tar)
 
             # —— pad token penalty ——
             _pad_target_divisor = pad_target_penalty
             _pad_mask_flat = (x0 == pad_token_id)  
             if _pad_mask_flat.any():
-                target = target.clone()
-                target[_pad_mask_flat] = target[_pad_mask_flat] / _pad_target_divisor
+                x0_p = x0_p.clone()
+                x0_p[_pad_mask_flat] = x0_p[_pad_mask_flat] / _pad_target_divisor
 
             if cgws is not None:
-                full_target = torch.full_like(x[:, window_slice], -torch.inf, device=model.device, dtype=logits.dtype)
+                full_x0_p = torch.full_like(x[:, window_slice], -torch.inf, device=model.device, dtype=logits.dtype)
             else:
-                full_target = torch.full_like(x[:, current_block_start:], -torch.inf, device=model.device, dtype=logits.dtype)
-            full_target = full_target.float()
-            full_target[mask_index] = target
-            full_target[:, block_length:] = -torch.inf
+                full_x0_p = torch.full_like(x[:, current_block_start:], -torch.inf, device=model.device, dtype=logits.dtype)
+            full_x0_p = full_x0_p.float()
+            full_x0_p[mask_index] = x0_p
+            full_x0_p[:, block_length:] = -torch.inf
 
             if unmask_threshold is None:
 
@@ -240,11 +248,11 @@ def block_diffusion_generate(
                 
                 if number_transfer_tokens > 0:
                     if alg_temp is None or alg_temp == 0:
-                        _, transfer_index = torch.topk(full_target, number_transfer_tokens)
+                        _, transfer_index = torch.topk(full_x0_p, number_transfer_tokens)
                     else:
-                        full_target = full_target / alg_temp
-                        full_target = F.softmax(full_target, dim=-1)
-                        transfer_index = torch.multinomial(full_target, num_samples=number_transfer_tokens)
+                        full_x0_p = full_x0_p / alg_temp
+                        full_x0_p = F.softmax(full_x0_p, dim=-1)
+                        transfer_index = torch.multinomial(full_x0_p, num_samples=number_transfer_tokens)
                     
                     if cgws is not None:
                         x_ = torch.zeros_like(x[:, window_slice], device=model.device, dtype=torch.long) + mask_token_id
@@ -267,12 +275,12 @@ def block_diffusion_generate(
                     xwin = x[:, current_block_start:]
                 
                 selected_map = torch.zeros_like(xwin, dtype=torch.bool)
-                selected_map[mask_index] = (target >= unmask_threshold)
+                selected_map[mask_index] = (x0_p >= unmask_threshold)
                 no_sel = ~selected_map.any(dim=-1)  # [B]
                 no_sel = no_sel & mask_index.any(dim=-1)
 
                 if no_sel.any():
-                    masked_scores = full_target.masked_fill(~mask_index, float("-inf"))
+                    masked_scores = full_x0_p.masked_fill(~mask_index, float("-inf"))
                     best_idx = torch.argmax(masked_scores, dim=-1)
                     selected_rows = torch.nonzero(no_sel, as_tuple=False).squeeze(-1)
                     selected_map[selected_rows, best_idx[selected_rows]] = True
@@ -374,11 +382,18 @@ def block_diffusion_generate_FreeDave(
     # # Initialize cache for the prompt
     past_key_values = None
 
+    if not use_cache:
+        cgws = None
+
     # Process each block
     for num_block in range(num_blocks):
         
         current_block_start = input_ids.shape[1] + num_block * block_length
         current_block_end = current_block_start + block_length
+
+        if cgws is not None:
+            window_end  = max_length if cgws is None else min(current_block_end + cgws, max_length)
+            window_slice = slice(current_block_start, window_end)
 
         # update cache
         if use_cache:
@@ -415,6 +430,11 @@ def block_diffusion_generate_FreeDave(
             cur_x = x
             cur_tok_idx = tok_idx
 
+        if cgws is not None:
+            mask_index = (x[:, window_slice] == mask_token_id)
+        else:
+            mask_index = (x[:, current_block_start:] == mask_token_id)
+
         # Prepare attention mask for cached generation
         if attention_mask != "full" and use_cache:
             # Adjust attention mask for current position
@@ -425,14 +445,21 @@ def block_diffusion_generate_FreeDave(
         else:
             current_attention_mask = attention_mask
         
-        mask_index = (cur_x == mask_token_id)
         mask_index[:, block_length:] = False
         x0, x0_p = sample_step(
             model, 
             cur_x, 
-            current_block_start, current_attention_mask, cur_tok_idx, mask_index,
-            past_key_values, use_cache,
-            temperature, top_p, top_k, tar,
+            current_block_start, 
+            current_attention_mask, 
+            cur_tok_idx, 
+            mask_index,
+            past_key_values, 
+            use_cache,
+            temperature, 
+            top_p, 
+            top_k, 
+            tar,
+            mask_token_id,
         )
 
         denoising_steps = steps_per_block[num_block]
@@ -448,7 +475,7 @@ def block_diffusion_generate_FreeDave(
                 cur_x, 
                 x0, 
                 x0_p,
-                [step], 
+                [step for _ in range(cur_x.shape[0])], 
                 denoising_steps, 
                 cur_draft_steps, 
                 timesteps[num_block],
@@ -479,6 +506,7 @@ def block_diffusion_generate_FreeDave(
                     top_p, 
                     top_k, 
                     tar,
+                    mask_token_id,
                 )
 
                 x_target = token_transfer(
@@ -505,7 +533,8 @@ def block_diffusion_generate_FreeDave(
                 cur_x = x_draft[:, matched_steps, :].squeeze(1)
                 x0 = x0_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
                 x0_p = x0_p_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
-                past_key_values = cache_batch_select_indices(past_key_values, matched_steps)
+                if use_cache:
+                    past_key_values = cache_batch_select_indices(past_key_values, matched_steps)
 
                 step += matched_steps.item() + 1
             else:
@@ -516,6 +545,8 @@ def block_diffusion_generate_FreeDave(
                 x[:, window_slice] = cur_x
             else:
                 x[:, current_block_start:] = cur_x
+
+            # assert (x[:, current_block_end:] != mask_token_id).sum() == 0, 'There should be no unmasked tokens after the block'
 
             if histories is not None:
                 histories.append(x.clone().cpu())
@@ -557,7 +588,8 @@ def sample_step(
     temperature, 
     top_p, 
     top_k, 
-    target
+    target,
+    mask_token_id,
     ):
     if use_cache:
         model_output = model(x, current_attention_mask, cur_tok_idx, past_key_values=past_key_values, use_cache=True)
@@ -569,8 +601,13 @@ def sample_step(
         logits = logits[:, current_block_start:]
         logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
 
-    # mask_logits = logits[mask_index]
-    x0_p, x0 = sample_tokens(logits, temperature, top_p=top_p, top_k=top_k, target=target)
+    mask_logits = logits[mask_index]
+    x0_p_mask, x0_mask = sample_tokens(mask_logits, temperature, top_p=top_p, top_k=top_k, target=target)
+    
+    x0 = torch.full_like(x, mask_token_id, dtype=torch.long)
+    x0[mask_index] = x0_mask
+    x0_p = torch.full_like(x, -torch.inf, device=x.device, dtype=torch.float32)
+    x0_p[mask_index] = x0_p_mask.float()
 
     return x0, x0_p
 
@@ -611,14 +648,15 @@ def token_transfer(
         
         transfer_index = torch.zeros_like(x_draft, dtype=torch.bool)
         for j in range(x_draft.shape[0]):
+            curr_num_mask = num_mask_token[j]
             for k in range(draft_steps):
-                
-                if step[j] < denoising_steps - 1:
-                    t = timesteps[step[j] + k]
-                    s = timesteps[step[j] + k + 1]
-                    number_transfer_tokens = int(num_mask_token[j] * (1 - s / t))
+                curr_step = step[j] + k
+                if curr_step < denoising_steps - 1:
+                    t = timesteps[curr_step]
+                    s = timesteps[curr_step + 1]
+                    number_transfer_tokens = int(curr_num_mask * (1 - s / t))
                 else:
-                    number_transfer_tokens = int(num_mask_token[j])
+                    number_transfer_tokens = int(curr_num_mask)
                 
                 if number_transfer_tokens > 0:
                     if alg_temp is None or alg_temp == 0:
@@ -630,6 +668,7 @@ def token_transfer(
                     
                     confidence[j, idx] = -torch.inf
                     transfer_index[j, k:, idx] = True
+                    curr_num_mask -= number_transfer_tokens
                     
     else:
          raise ValueError(

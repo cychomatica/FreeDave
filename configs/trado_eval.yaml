@@ -2,6 +2,8 @@ experiment:
     project: "trado_eval" # need to be same of this file name
     num_node: 1 # the number of machines you have
     node_index: 0 # no need to change
+    seed: 42
+    deterministic: True
 
 model: "Gen-Verse/TraDo-4B-Instruct" # absolute path of your model
 model_base: "trado" 
@@ -24,7 +26,7 @@ rollout:
     denoising_steps_per_block: 4 # 4, 8, 16, 32
     draft_steps: 1 # 1, 2, 4, 8
     top_p: 1.0
-    top_k: 0
+    top_k: 1 # 1 for low_confidence_static decoding, 0 for low_confidence_dynamic decoding
     remasking_strategy: "low_confidence_static" # "low_confidence_static""low_confidence_dynamic"
     dynamic_threshold: 0.9
     start_with_think: False # if not reasoning model, set to False, otherwise True

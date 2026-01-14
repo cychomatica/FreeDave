@@ -5,13 +5,15 @@
 # FAST_SAMPLING_METHODS=("NA" "Dynamic" "FreeDave")
 
 MODEL="Gen-Verse/TraDo-4B-Instruct"
-DATASET="MATH500"
-FAST_SAMPLING_METHOD="Dynamic"
+DATASET="HumanEval"
+FAST_SAMPLING_METHOD="FreeDave"
+DETERMINISTIC=True
+SEED=42
 
 if [[ "$DATASET" == "MMLU-Pro" ]];
 then
 DATA_TYPE="option"
-elif [[ "$DATASET" == "MATH500" || "$DATASET" == "GSM8K" || "$DATASET" == "AIME2024" ]];
+elif [[ "$DATASET" == "MATH500" || "$DATASET" == "MATH500_subset" || "$DATASET" == "MATH500_miniset" || "$DATASET" == "GSM8K" || "$DATASET" == "AIME2024" ]];
 then
 DATA_TYPE="math"
 elif [[ "$DATASET" == "MBPP" || "$DATASET" == "HumanEval" ]];
@@ -47,15 +49,17 @@ then
         K=0
     elif [[ "$FAST_SAMPLING_METHOD" == "FreeDave" ]];
     then
-        DRAFT_STEPS=16
+        DRAFT_STEPS=4
         FAST_SAMPLING_VERSION="v1"
-        EAGER_ACCEPTANCE_MODE=True
+        EAGER_ACCEPTANCE_MODE=False
     fi
 
     python -m eval.trado_eval \
     config=configs/trado_eval.yaml \
     dataset.eval_dataset=$DATASET \
     model=$MODEL \
+    experiment.deterministic=$DETERMINISTIC \
+    experiment.seed=$SEED \
     rollout.max_token=$MAX_TOKEN \
     rollout.block_size=4 \
     rollout.denoising_steps_per_block=$DENOISING_STEPS_PER_BLOCK \
@@ -118,7 +122,7 @@ then
         BLOCK_SIZE=4
     elif [[ "$FAST_SAMPLING_METHOD" == "FreeDave" ]];
     then
-        DRAFT_STEPS=4
+        DRAFT_STEPS=2
     fi    
 
     python -m eval.dream_eval \

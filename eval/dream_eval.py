@@ -11,9 +11,11 @@ from utils.eval_utils import data_prepare, output_process, reward, get_token_len
 from tqdm import tqdm
 from termcolor import cprint
 
+from utils.determinism_utils import setup_determinism, deterministic
+
 if __name__ == "__main__":
-    
     config = get_config()
+    setup_determinism(config.experiment.get('seed', 42))
     cprint('Experiment config:\n{}'.format(config), color='green')
 
     dataset = config.dataset.eval_dataset
@@ -22,7 +24,7 @@ if __name__ == "__main__":
 
     # Load model and tokenizer
     model_path = config.model
-    model = DreamModel.from_pretrained(model_path, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map="cuda")
+    model = DreamModel.from_pretrained(model_path, trust_remote_code=True, torch_dtype='float16', device_map="cuda")
     tokenizer = DreamTokenizer.from_pretrained(model_path, trust_remote_code=True)
     model.eval()
     nfe_counter = ForwardHookCounter(model)
@@ -77,40 +79,39 @@ if __name__ == "__main__":
     total_response_tokens = 0
     total_nfe = 0
     for i in tqdm(range(len(data))):
-        prompt = data[i]['prompt']
-        messages = [{'role': 'user', 'content': prompt}]
-        prompt = tokenizer.apply_chat_template(
-            messages, return_tensors="pt", return_dict=True, add_generation_prompt=True
-        )
-        prompt_ids = prompt.input_ids.to(device="cuda")
-        attention_mask = prompt.attention_mask.to(device="cuda")
 
-        nfe_counter.reset_count()
-        start_time = time.time()
-        with nfe_counter.count_context():
-            output = generate_func(
-                input_ids=prompt_ids,
-                attention_mask=attention_mask,
-            )
-        end_time = time.time()
-        sampling_time = end_time - start_time
-        nfe = nfe_counter.counter.count
+        with deterministic(enabled=True, seed=42):
+            full_prompt_str = data[i]['prompt']
+            inputs = tokenizer(full_prompt_str, return_tensors="pt", add_special_tokens=False).to("cuda")
+            prompt_ids = inputs.input_ids
+            attention_mask = inputs.attention_mask
 
-        output.sequences = output.sequences.cpu()
-        torch.cuda.empty_cache()
+            nfe_counter.reset_count()
+            start_time = time.time()
+            with nfe_counter.count_context():
+                output = generate_func(
+                    input_ids=prompt_ids,
+                    attention_mask=attention_mask,
+                )
+            end_time = time.time()
+            sampling_time = end_time - start_time
+            nfe = nfe_counter.counter.count
 
-        output_text = tokenizer.decode(output.sequences[0][len(prompt_ids[0]):].tolist())
-        cleaned_text = output_text.split(tokenizer.eos_token)[0].strip()
+            output.sequences = output.sequences.cpu()
+            torch.cuda.empty_cache()
 
-        data[i]['full_output'].append(output_text)
-        data[i]['cleaned_output'].append(cleaned_text)
-        data[i]['response_tokens'] = get_token_lengths(data[i]['cleaned_output'], tokenizer)
-        data[i]['response_time'].append(sampling_time)
-        data[i]['response_nfe'].append(nfe)
+            output_text = tokenizer.decode(output.sequences[0][len(prompt_ids[0]):].tolist())
+            cleaned_text = output_text.split(tokenizer.eos_token)[0].strip()
 
-        total_sampling_time += sampling_time
-        total_response_tokens += sum(data[i]['response_tokens'])
-        total_nfe += nfe
+            data[i]['full_output'].append(output_text)
+            data[i]['cleaned_output'].append(cleaned_text)
+            data[i]['response_tokens'] = get_token_lengths(data[i]['cleaned_output'], tokenizer)
+            data[i]['response_time'].append(sampling_time)
+            data[i]['response_nfe'].append(nfe)
+
+            total_sampling_time += sampling_time
+            total_response_tokens += sum(data[i]['response_tokens'])
+            total_nfe += nfe
 
     cprint('Generation done!', color='green')
     cprint('Avg throughput (tokens/s): {}'.format(total_response_tokens / total_sampling_time), color='green')
@@ -122,7 +123,7 @@ if __name__ == "__main__":
     os.makedirs(save_dir, exist_ok=True)
 
     sampling_mode = 'normal' if config.rollout.draft_steps == 1 else 'fast-draft_steps={}'.format(config.rollout.draft_steps)
-    remasking_strategy = 'static' if config.rollout.target == "low_confidence_static" else 'dynamic'
+    remasking_strategy = 'static' if config.rollout.remasking_strategy == "low_confidence_static" else 'dynamic'
     save_filename = '{}-{}-{}-max_gen_length={}-block_size={}-steps={}-{}.json'.format(os.path.basename(model_path), sampling_mode, remasking_strategy, config.rollout.max_gen_length, config.rollout.block_size, config.rollout.steps, dataset)
     
     with open(os.path.join(save_dir, save_filename), 'w') as f:
