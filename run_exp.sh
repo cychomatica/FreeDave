@@ -7,7 +7,7 @@
 MODEL="Gen-Verse/TraDo-4B-Instruct"
 DATASET="HumanEval"
 FAST_SAMPLING_METHOD="FreeDave"
-DETERMINISTIC=True
+DETERMINISTIC=False
 SEED=42
 
 if [[ "$DATASET" == "MMLU-Pro" ]];
@@ -49,9 +49,9 @@ then
         K=0
     elif [[ "$FAST_SAMPLING_METHOD" == "FreeDave" ]];
     then
-        DRAFT_STEPS=4
+        DRAFT_STEPS=8
         FAST_SAMPLING_VERSION="v1"
-        EAGER_ACCEPTANCE_MODE=False
+        EAGER_ACCEPTANCE_MODE=True
     fi
 
     python -m eval.trado_eval \
@@ -95,6 +95,8 @@ then
     config=configs/sdar_eval.yaml \
     dataset.eval_dataset=$DATASET \
     model=$MODEL \
+    experiment.deterministic=$DETERMINISTIC \
+    experiment.seed=$SEED \
     rollout.max_token=$MAX_TOKEN \
     rollout.block_size=4 \
     rollout.denoising_steps_per_block=$DENOISING_STEPS_PER_BLOCK \
@@ -122,13 +124,15 @@ then
         BLOCK_SIZE=4
     elif [[ "$FAST_SAMPLING_METHOD" == "FreeDave" ]];
     then
-        DRAFT_STEPS=2
+        DRAFT_STEPS=4
     fi    
 
     python -m eval.dream_eval \
     config=configs/dream_eval.yaml \
     dataset.eval_dataset=$DATASET \
     model=$MODEL \
+    experiment.deterministic=$DETERMINISTIC \
+    experiment.seed=$SEED \
     rollout.steps=$STEPS \
     rollout.max_gen_length=$MAX_TOKEN \
     rollout.block_size=$BLOCK_SIZE \

@@ -10,3 +10,11 @@ data/preprocess_sft.ipynb
 data/readme.md
 *.json
 wandb/
+calculate_avg_prompt_tokens.py
+calculate_exact_match_rate.py
+calculate_prompt_remainder.py
+plot_tmp.py
+tmp_calculate_avg_prompt_tokens.py
+tmp_reward.py
+plot_tmp.png
+plot_tmp.pdf

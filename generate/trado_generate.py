@@ -281,6 +281,8 @@ def block_diffusion_generate_FreeDave(
         cur_num_transfer_tokens = num_transfer_tokens.repeat(cur_future_num_blocks+1)
 
         cur_x = x[:, prefill_length:prefill_length + (cur_future_num_blocks+1) * block_length].clone()
+
+        # eager mode ++; work in progress
         # cur_attn_mask = torch.ones(x.shape[0], (cur_future_num_blocks+1) * block_length, prefill_length + (cur_future_num_blocks+1) * block_length, device=x.device) # each token in current block and draft blocks attends to all previous blocks, current block, and draft blocks
 
         cur_attn_mask = block_diffusion_attention_mask[
@@ -332,7 +334,14 @@ def block_diffusion_generate_FreeDave(
                     step += 1
                     break
                 else:
+                    if not eager_acceptance_mode and denoising_steps - step == 1:
+                        # with eager mode disabled, accept draft tokens and exit if the last step in the current block
+                        cur_x = x_draft
+                        step += 1
+                        break
+
                     # copy kv cache for new forward pass
+                    # TODO: use expand instead of repeat_interleave to further reduce memory usage
                     past_key_values.batch_repeat_interleave(x_draft.shape[0])
 
                     # New forward pass
@@ -359,15 +368,18 @@ def block_diffusion_generate_FreeDave(
                     matched_draft_index = (x_target[:, :-1, :] == x_draft[:, 1:, :]).all(dim=-1)
                     matched_steps = torch.cumprod(matched_draft_index, dim=-1).sum(dim=-1) #NOTE: assert matched_steps.shape[0] == 1 here
         
+                    # debug: enforce every draft to be rejected
+                    # matched_steps = torch.zeros_like(matched_steps, device=x.device)
+
                     # NOTE: more aggressive matching (not ready yet)
                     # region
-                # matched_select_index = (x_target[:, :-1, :] == x_draft[:, 1:, :]).prod(dim=1).bool()
-                # cur_x[matched_select_index] = x_draft[:, -1, :][matched_select_index]
-                # x0[matched_select_index] = x0_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, -1, :][matched_select_index]
-                # x0_p[matched_select_index] = x0_p_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, -1, :][matched_select_index]
-                # past_key_values.batch_select_indices(torch.tensor([-1], device=x.device))
-                # step += matched_select_index.sum() + 1
-                # endregion
+                    # matched_select_index = (x_target[:, :-1, :] == x_draft[:, 1:, :]).prod(dim=1).bool()
+                    # cur_x[matched_select_index] = x_draft[:, -1, :][matched_select_index]
+                    # x0[matched_select_index] = x0_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, -1, :][matched_select_index]
+                    # x0_p[matched_select_index] = x0_p_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, -1, :][matched_select_index]
+                    # past_key_values.batch_select_indices(torch.tensor([-1], device=x.device))
+                    # step += matched_select_index.sum() + 1
+                    # endregion
 
                     # Update current x, current kv cache, and forward pass intermediate results
                     past_key_values.batch_select_indices(matched_steps)

@@ -1,19 +1,23 @@
-import torch
-from generate.dream_generate import block_diffusion_generate, block_diffusion_generate_FreeDave
-import time, os
-from modeling.dream.generation_utils_block import DreamGenerationConfig
-from modeling.dream.tokenization_dream import DreamTokenizer
-from modeling.dream.modeling_dream import DreamModel
-from utils.monitor_utils import ForwardHookCounter
-from termcolor import cprint
-
 from utils.determinism_utils import deterministic
 
-if __name__ == '__main__':
+def main(chat_history=False):
+    # All imports inside main() so they happen after deterministic context is entered
+    import torch
+    from modeling.dream.modeling_dream import DreamModel
+    from modeling.dream.tokenization_dream import DreamTokenizer
+    from modeling.dream.generation_utils_block import DreamGenerationConfig
+    from generate.dream_generate import block_diffusion_generate, block_diffusion_generate_FreeDave
+    import time, os
+    from utils.monitor_utils import ForwardHookCounter
+    from termcolor import cprint
         
     # Load model and tokenizer
     model_path = 'Dream-org/Dream-v0-Instruct-7B'
-    model = DreamModel.from_pretrained(model_path, trust_remote_code=True, torch_dtype=torch.bfloat16, device_map='cuda')
+    model = DreamModel.from_pretrained(
+        model_path, 
+        trust_remote_code=True, 
+        torch_dtype='float16', 
+        device_map='cuda')
     tokenizer = DreamTokenizer.from_pretrained(model_path, trust_remote_code=True)
     model.eval()
     forward_counter = ForwardHookCounter(model)
@@ -27,24 +31,26 @@ if __name__ == '__main__':
     print('-'*100)
 
     while True:
+
+        if not chat_history:
+            messages = []
+
         # Get user input
-        user_input = input('You: ')
+        prompt = input('Enter your question: \n')
         print('-'*100)
 
         # Check if user wants to exit
-        if user_input.lower() == 'exit':
+        if prompt.lower() == 'exit':
             print('Conversation ended.')
             break
 
         # Add user message to conversation history
-        messages.append({'role': 'user', 'content': user_input})
-
-        # Format input with chat template
-        prompt = tokenizer.apply_chat_template(
+        messages.append({'role': 'user', 'content': prompt})
+        text = tokenizer.apply_chat_template(
             messages, return_tensors='pt', return_dict=True, add_generation_prompt=True
         )
-        prompt_ids = prompt.input_ids.to(device='cuda')
-        attention_mask = prompt.attention_mask.to(device='cuda')
+        prompt_ids = text.input_ids.to(device='cuda')
+        attention_mask = text.attention_mask.to(device='cuda')
 
         generation_config = DreamGenerationConfig(
             output_history=True,            
@@ -121,9 +127,13 @@ if __name__ == '__main__':
         cleaned_generation_fast = generation_fast.split(tokenizer.eos_token)[0].strip()
 
         # Print response
-        cprint('Fast generation: (time: {} seconds; nfe: {}; avg forward time: {} seconds)'.format(end_time - start_time, forward_counter.counter.count, (end_time - start_time) / forward_counter.counter.count), 'cyan')
+        cprint('FreeDave generation: (time: {:.4f} seconds; nfe: {}; avg forward time: {:.4f} seconds)'.format(end_time - start_time, forward_counter.counter.count, (end_time - start_time) / forward_counter.counter.count), 'cyan')
         print('Model\'s Response:', cleaned_generation_fast)
         print('-'*100)
 
         # Add the response from normal generation to the conversation history by default
         messages.append({'role': 'assistant', 'content': cleaned_generation})
+
+if __name__ == '__main__':
+    with deterministic(enabled=True, seed=42):
+        main(chat_history=True)
