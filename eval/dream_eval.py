@@ -73,7 +73,7 @@ def main(config):
         cprint('Evaluating {} on {}.\nUsing normal sampling ({})'.format(os.path.basename(model_path), dataset, config.rollout.remasking_strategy), color='green')
 
     total_sampling_time = 0
-    total_response_tokens = 0
+    total_generated_tokens = 0
     total_nfe = 0
     for i in tqdm(range(len(data))):
 
@@ -81,6 +81,7 @@ def main(config):
         inputs = tokenizer(full_prompt_str, return_tensors="pt", add_special_tokens=False).to("cuda")
         prompt_ids = inputs.input_ids
         attention_mask = inputs.attention_mask
+        prompt_len = len(prompt_ids[0])
 
         nfe_counter.reset_count()
         start_time = time.time()
@@ -96,22 +97,32 @@ def main(config):
         output.sequences = output.sequences.cpu()
         torch.cuda.empty_cache()
 
-        output_text = tokenizer.decode(output.sequences[0][len(prompt_ids[0]):].tolist())
+        output_text = tokenizer.decode(output.sequences[0][prompt_len:], skip_special_tokens=False)
         cleaned_text = output_text.split(tokenizer.eos_token)[0].strip()
+
+        # Calculate the number of generated tokens, taking into account the early exit mechanism applied by the generation function
+        non_pad_positions = (output.sequences[0][prompt_len:] != model.config.pad_token_id).nonzero(as_tuple=True)[0]
+        if len(non_pad_positions) > 0:
+            last_non_pad = non_pad_positions[-1].item()
+        else:
+            last_non_pad = 0
+        num_generated_tokens = ((last_non_pad // config.rollout.block_size) + 1) * config.rollout.block_size
+        num_generated_tokens = min(num_generated_tokens, len(output.sequences[0][prompt_len:]))
 
         data[i]['full_output'].append(output_text)
         data[i]['cleaned_output'].append(cleaned_text)
+        data[i]['generated_tokens'].append(num_generated_tokens)
         data[i]['response_tokens'] = get_token_lengths(data[i]['cleaned_output'], tokenizer)
         data[i]['response_time'].append(sampling_time)
         data[i]['response_nfe'].append(nfe)
 
         total_sampling_time += sampling_time
-        total_response_tokens += sum(data[i]['response_tokens'])
+        total_generated_tokens += sum(data[i]['generated_tokens'])
         total_nfe += nfe
 
     cprint('Generation done!', color='green')
-    cprint('Avg throughput (tokens/s): {}'.format(total_response_tokens / total_sampling_time), color='green')
-    cprint('Avg throughput (tokens/nfe): {}'.format(total_response_tokens / total_nfe), color='green')
+    cprint('Avg throughput (tokens/s): {}'.format(total_generated_tokens / total_sampling_time), color='green')
+    cprint('Avg throughput (tokens/nfe): {}'.format(total_generated_tokens / total_nfe), color='green')
 
     data = output_process(config.dataset.data_type, data)
 

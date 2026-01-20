@@ -78,7 +78,7 @@ def main(config):
         cprint('Evaluating {} on {}.\nUsing normal sampling ({})'.format(os.path.basename(model_path), dataset, config.rollout.remasking_strategy), color='green')
 
     total_sampling_time = 0
-    total_response_tokens = 0
+    total_generated_tokens = 0
     total_nfe = 0
     total_accepted_steps = 0
     total_draft_steps = 0
@@ -102,22 +102,24 @@ def main(config):
 
         output_text = tokenizer.decode(output_ids[0][prompt_len:], skip_special_tokens=False)
         cleaned_text = output_text.replace('<|MASK|>', '').replace('<|endoftext|>', '').replace('<|im_end|>', '').strip()
+        num_generated_tokens = len(output_ids[0][prompt_len:])
         
         data[i]['full_output'].append(output_text)
         data[i]['cleaned_output'].append(cleaned_text)
+        data[i]['generated_tokens'].append(num_generated_tokens)
         data[i]['response_tokens'] = get_token_lengths(data[i]['cleaned_output'], tokenizer)
         data[i]['response_time'].append(sampling_time)
         data[i]['response_nfe'].append(nfe)
         
         total_sampling_time += sampling_time
-        total_response_tokens += sum(data[i]['response_tokens'])
+        total_generated_tokens += sum(data[i]['generated_tokens'])
         total_nfe += nfe
         total_accepted_steps += accepted_steps
         total_draft_steps += draft_steps
 
     cprint('Generation done!', color='green')
-    cprint('Avg throughput (tokens/s): {}'.format(total_response_tokens / total_sampling_time), color='green')
-    cprint('Avg throughput (tokens/nfe): {}'.format(total_response_tokens / total_nfe), color='green')
+    cprint('Avg throughput (tokens/s): {}'.format(total_generated_tokens / total_sampling_time), color='green')
+    cprint('Avg throughput (tokens/nfe): {}'.format(total_generated_tokens / total_nfe), color='green')
     if total_draft_steps > 0:
         cprint('Avg acceptance rate: {}'.format(total_accepted_steps / total_draft_steps), color='green')
     data = output_process(config.dataset.data_type, data)

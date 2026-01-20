@@ -51,19 +51,11 @@ def get_system_prompts(model_base='trado', data_type='math', start_with_think=Fa
     return system_prompts, code_eval
 
 def get_token_lengths(strings, tokenizer):
-    pad_token = tokenizer.pad_token
-
-    escaped = re.escape(pad_token)
-    pattern = rf"(?:{escaped})+"
-    remove_pattern = escaped
-
-    collapse_re = re.compile(pattern)
-
     lengths = []
     for s in strings:
-        s_clean = collapse_re.sub(lambda _: pad_token if isinstance(pad_token, str) else '', s)
-        s_clean = re.sub(remove_pattern, '', s_clean)
-        lengths.append(len(tokenizer.encode(s_clean, add_special_tokens=False)))
+        token_ids = tokenizer.encode(s, add_special_tokens=False)
+        token_ids = [t for t in token_ids if t != tokenizer.pad_token_id]
+        lengths.append(len(token_ids))
     return lengths
 
 def data_prepare(model_base, data_type, data_path, start_with_think=False):
@@ -81,6 +73,7 @@ def data_prepare(model_base, data_type, data_path, start_with_think=False):
             data[i]['cleaned_output'] = []
             data[i]['extracted_output'] = []
             data[i]['step_map'] = []
+            data[i]['generated_tokens'] = []
             data[i]['response_tokens'] = []
             data[i]['response_time'] = []
             data[i]['response_nfe'] = []
@@ -93,6 +86,7 @@ def data_prepare(model_base, data_type, data_path, start_with_think=False):
             data[i]['cleaned_output'] = []
             data[i]['extracted_output'] = []
             data[i]['step_map'] = []
+            data[i]['generated_tokens'] = []
             data[i]['response_tokens'] = []
             data[i]['response_time'] = []
             data[i]['response_nfe'] = []
@@ -149,12 +143,14 @@ def reward(config, outputs_dir, outputs_filename):
     index_list = []
     extracted_output_list = []
     ground_truth_list = []
+    generated_length_list = []
     response_length_list = []
     response_time_list = []
     response_nfe_list = []
     for i in range(len(data)):
         response_time_list = response_time_list + data[i]['response_time']
         response_nfe_list = response_nfe_list + data[i]['response_nfe']
+        generated_length_list = generated_length_list + data[i]['generated_tokens']
         response_length_list = response_length_list + data[i]['response_tokens']
         index_list = index_list + [i] * len(data[i]['extracted_output'])
         extracted_output_list = extracted_output_list + data[i]['extracted_output']
@@ -222,11 +218,12 @@ def reward(config, outputs_dir, outputs_filename):
             cprint('*'*10 + 'eval results' + '*'*10 + '\n' + text, color='green')
             f.write(text + '\n')
 
-        avg_len = sum(response_length_list)/len(response_length_list)
+        avg_generated_len = sum(generated_length_list)/len(generated_length_list)
+        avg_valid_len = sum(response_length_list)/len(response_length_list)
         avg_time = sum(response_time_list)/len(response_time_list)
         avg_nfe = sum(response_nfe_list)/len(response_nfe_list)
 
-        save_and_print(f'acc: {acc}\navg length: {avg_len}\navg time: {avg_time}\navg nfe: {avg_nfe}')
+        save_and_print(f'acc: {acc}\navg generated tokens: {avg_generated_len}\navg valid tokens: {avg_valid_len}\navg time: {avg_time}\navg nfe: {avg_nfe}')
 
 def execute(config, outputs_dir, outputs_filename):
     subprocess.run(
