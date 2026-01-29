@@ -47,6 +47,8 @@ def sample_with_temperature_topk_topp(logits, temperature=1.0, top_k=0, top_p=1.
     assert probs.dim() == 2
 
     if top_k == 1:
+        # if top_k is 1 (i.e. greedy decoding), we use raw_probs
+        # because in this case, token_prob from probs will always be 1.0 at every position
         token = raw_probs.argmax(dim=-1)
         token_prob = raw_probs.max(dim=-1).values
     else:
@@ -282,7 +284,7 @@ def block_diffusion_generate_FreeDave(
 
         cur_x = x[:, prefill_length:prefill_length + (cur_future_num_blocks+1) * block_length].clone()
 
-        # eager mode ++; work in progress
+        # eager mode ++: full attention across current block and future blocks
         # cur_attn_mask = torch.ones(x.shape[0], (cur_future_num_blocks+1) * block_length, prefill_length + (cur_future_num_blocks+1) * block_length, device=x.device) # each token in current block and draft blocks attends to all previous blocks, current block, and draft blocks
 
         cur_attn_mask = block_diffusion_attention_mask[
@@ -295,7 +297,7 @@ def block_diffusion_generate_FreeDave(
 
         # First forward pass
         # step = 0
-        step = (cur_x != mask_id).sum().item()
+        step = (cur_x[:, :block_length] != mask_id).sum().item()
         if step < denoising_steps:
             x0, x0_p = sample_step(model, cur_x, cur_attn_mask, cur_position_ids, past_key_values, temperature, top_k, top_p, block_length=block_length)
             while step < denoising_steps:
@@ -343,6 +345,7 @@ def block_diffusion_generate_FreeDave(
                     # copy kv cache for new forward pass
                     # TODO: use expand instead of repeat_interleave to further reduce memory usage
                     past_key_values.batch_repeat_interleave(x_draft.shape[0])
+                    # cache_batch_expand(past_key_values, x_draft.shape[0])
 
                     # New forward pass
                     x0_draft, x0_p_draft = sample_step(model, x_draft.clone(), cur_attn_mask, cur_position_ids, past_key_values, temperature, top_k, top_p, block_length=block_length)
@@ -381,8 +384,12 @@ def block_diffusion_generate_FreeDave(
                     # step += matched_select_index.sum() + 1
                     # endregion
 
+                    # Update step
+                    step += matched_steps.item() + 1
+
                     # Update current x, current kv cache, and forward pass intermediate results
                     past_key_values.batch_select_indices(matched_steps)
+                    # cache_batch_select_indices(past_key_values, matched_steps)
                     total_accepted_steps += matched_steps.item()
                     total_draft_steps += cur_draft_steps
                     if eager_acceptance_mode:
@@ -402,8 +409,8 @@ def block_diffusion_generate_FreeDave(
                         x0 = x0_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
                         x0_p = x0_p_draft.view(cur_x.shape[0], cur_draft_steps, *cur_x.shape[1:])[:, matched_steps, :].squeeze(1)
                     
-                    # Update step
-                    step += matched_steps.item() + 1
+                    # # Update step
+                    # step += matched_steps.item() + 1
 
         # Update kv cache
         if num_block < num_blocks - 1: # if not the last block
@@ -562,3 +569,15 @@ def token_transfer(
     x_draft = x_draft.view(x.shape[0] * draft_steps, *x.shape[1:]) # (batch * draft_steps, seq_len)
 
     return x_draft
+
+def cache_batch_expand(past_key_values, repeats: int):
+    """Repeat the cache `repeats` times in the batch dimension. Used in contrastive search."""
+    for layer_idx in range(len(past_key_values)):
+        past_key_values.key_cache[layer_idx] = past_key_values.key_cache[layer_idx].expand(repeats, *past_key_values.key_cache[layer_idx].shape[1:])
+        past_key_values.value_cache[layer_idx] = past_key_values.value_cache[layer_idx].expand(repeats, *past_key_values.value_cache[layer_idx].shape[1:])
+
+def cache_batch_select_indices(past_key_values, indices: torch.Tensor):
+    """Only keep the `indices` in the batch dimension of the cache. Used in contrastive search."""
+    for layer_idx in range(len(past_key_values)):  
+        past_key_values.key_cache[layer_idx] = past_key_values.key_cache[layer_idx][indices, ...]
+        past_key_values.value_cache[layer_idx] = past_key_values.value_cache[layer_idx][indices, ...]

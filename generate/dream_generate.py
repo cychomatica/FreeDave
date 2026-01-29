@@ -45,6 +45,8 @@ def sample_tokens(logits, temperature=0.0, top_p=None, top_k=None, target=None):
     probs = torch.softmax(logits, dim=-1)
 
     if top_k == 1:
+        # if top_k is 1 (i.e. greedy decoding), we use raw_probs
+        # because in this case, confidence from probs will always be 1.0 at every position
         confidence, x0 = raw_probs.max(dim=-1)
         return confidence, x0
 
@@ -444,6 +446,8 @@ def block_diffusion_generate_FreeDave(
                 current_attention_mask = attention_mask[:, :, current_block_start:, :]
         else:
             current_attention_mask = attention_mask
+
+        block_priority_shift = torch.arange(cgws // block_length, -1, -1, device=x.device).repeat_interleave(block_length) # left to right priority
         
         mask_index[:, block_length:] = False
         x0, x0_p = sample_step(
@@ -489,7 +493,7 @@ def block_diffusion_generate_FreeDave(
 
             if denoising_steps - step > 1:
                 if use_cache:
-                    past_key_values = cache_batch_repeat_interleave(past_key_values, cur_draft_steps)
+                    past_key_values = cache_batch_expand(past_key_values, cur_draft_steps)
 
                 mask_index_draft = (x_draft == mask_token_id)
                 mask_index_draft[:, block_length:] = False
@@ -679,7 +683,7 @@ def token_transfer(
     return x_draft
 
 @torch.no_grad()
-def cache_batch_repeat_interleave(past_key_values, n):
+def cache_batch_expand(past_key_values, n):
     '''
         past_key_values: 
         a list of n_heads tuples (key, value)

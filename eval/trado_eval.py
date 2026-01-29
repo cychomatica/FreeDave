@@ -83,7 +83,7 @@ def main(config):
     total_accepted_steps = 0
     total_draft_steps = 0
 
-    for i in tqdm(range(len(data))):        
+    for i in tqdm(range(len(data)), dynamic_ncols=True):        
         prompt = data[i]['prompt']
         tokens = tokenizer.batch_encode_plus([prompt], return_tensors='pt', padding=True, truncation=False)
         tokens = {k: v.to(model.device) for k, v in tokens.items()}
