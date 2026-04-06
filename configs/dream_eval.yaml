@@ -14,25 +14,24 @@ dataset:
     data_type: "math" #"code""math"
 
 execute:
-    num_chunk: 128 # batch size of executing codes in coding eval tasks
+    num_chunk: 8 # batch size of executing codes in coding eval tasks
 
 rollout:
     num_response_per_task: 3
-    temperature: 0.1
-    alg_temp: 0
-    pad_target_penalty: 1.0 # sometimes the pad token has very large logits, leads to early stop in inference. 1.0 means no penalty
-    steps: 1024 # total steps of unmasking
-    max_gen_length: 1024
-    batch_size: 2
-    top_p: 1.0
-    top_k: 1 # 1 for low_confidence_static decoding, 0 for low_confidence_dynamic decoding
-    remasking_strategy: "low_confidence_static" #"low_confidence_static""low_confidence_dynamic"
-    target: "confidence" # target to decide which tokens to unmask, eg. confidence, margin_confidence and neg_entropy
-    dynamic_threshold: 0.95 # no use for "low_confidence_static"
-    block_size: 32
-    further_horizon: 128 # We find that performing the forward pass with a further horizon, eg. 128, (kv-cache sequence before current block, while doing full forward for currect [block_size + further_horizon] length sequence) yields competitive performance to running without KV-cache. Balances speed and performance.
-    output_unmasking_history: False
-    use_cache: True
+    temperature: 0.0
+    max_token: 1600 # max generation token num; 2048 for AIME2024 by default
+    block_size: 32 # 4, 8, 16, 32
+    draft_steps: 1 # 1, 2, 4, 8
+    top_p: null
+    top_k: null # 1 for low_confidence_static decoding, 0 for low_confidence_dynamic decoding
+    alg_temp: 0.0
+    start_with_think: False # if not reasoning model, set to False, otherwise True
+    output_unmasking_history: True
+    eager_acceptance_mode: False # True or False
+    draft_mode: "tree_attention" # "tree_attention" or "batch_expanding"
+    confidence_threshold: null # null or a float value
+    early_exit: True # True or False
+    dual_cache: True # True or False
 
 
 

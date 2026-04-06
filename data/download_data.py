@@ -19,6 +19,8 @@ dataset = args.dataset
 
 if dataset == "MATH_train" or dataset == "PrimeIntellect" or dataset == "demon_openr1math":
     split = "train"
+elif dataset == "MMLU-Pro":
+    split = "validation" # validation set has 70 examples; set to test if you want to evaluate on the full test set with 12k examples
 else:
     split = "test"
 

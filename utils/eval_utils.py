@@ -18,8 +18,26 @@ def get_config():
     conf = OmegaConf.merge(yaml_conf, cli_conf)
     return conf
 
-def get_prompt(data_i, system_prompts):
-    return Template(system_prompts).render(problem = data_i['question'])
+def format_option_problem(data_i: dict) -> str:
+    """Build MCQ text: Question header, stem, then A) … J) lines (MMLU-Pro style)."""
+    stem = (data_i.get("question") or "").strip()
+    options = data_i.get("options") or []
+    lines = ["Question:", stem, ""]
+    if not options:
+        return "\n".join(lines).rstrip()
+    # lines.append("")
+    # lines.append("Options:")
+    for idx, opt in enumerate(options):
+        letter = chr(ord("A") + idx)
+        lines.append(f"{letter}) {opt}")
+    lines.append("")
+    return "\n".join(lines)
+
+def get_prompt(data_i, system_prompts, data_type: str = "math"):
+    if data_type == "option":
+        problem = format_option_problem(data_i)
+        return Template(system_prompts).render(problem=problem)
+    return Template(system_prompts).render(problem=data_i["question"])
 
 def get_system_prompts(model_base='trado', data_type='math', start_with_think=False):
     if data_type == 'code':
@@ -34,9 +52,10 @@ def get_system_prompts(model_base='trado', data_type='math', start_with_think=Fa
         }
     elif data_type == 'option':
         code_eval = False
-        system_prompts = '''<|im_start|>user\nThis is the problem:\n{{problem}}\nYou need to think step by step and put the final option (A, B, C, or D only—no other character) in \\boxed{}. <|im_end|>\n<|im_start|>assistant\n'''
-        if start_with_think:
-            system_prompts = '''<|im_start|>user\nThis is the problem:\n{{problem}}\nYou need to think step by step and put the final option (A, B, C, or D only—no other character) in \\boxed{}. <|im_end|>\n<|im_start|>assistant<think>\n'''
+        if model_base == 'dream':
+            system_prompts = '''<|im_start|>system\nYou are a helpful assistant.<|im_end|>\n<|im_start|>user\n{{problem}}\nChoose the correct answer from the provided options and put the corresponding capital letter in \\boxed{}.<|im_end|>\n<|im_start|>assistant\n'''
+        else:
+            system_prompts = '''<|im_start|>user\n{{problem}}\nPlease reason step by step. Choose the correct answer from the provided options and put the corresponding capital letter in \\boxed{}.<|im_end|>\n<|im_start|>assistant\n'''
     else:
         code_eval = False
         if model_base in ['trado', 'sdar']:
@@ -68,7 +87,7 @@ def data_prepare(model_base, data_type, data_path, start_with_think=False):
     for i in range(len(data)):
 
         if data_type in ['math', 'option']:
-            data[i]['prompt'] = get_prompt(data[i], system_prompts)
+            data[i]['prompt'] = get_prompt(data[i], system_prompts, data_type)
             data[i]['full_output'] = []
             data[i]['cleaned_output'] = []
             data[i]['extracted_output'] = []
