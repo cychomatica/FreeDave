@@ -2,7 +2,7 @@ import torch
 from transformers import AutoTokenizer, AutoModel
 from termcolor import cprint
 import os
-from utils.monitor_utils import ForwardMonitor
+from generation.monitor_utils import ForwardMonitor
 from generation.generation_core import DLMGeneration
 import argparse
 
