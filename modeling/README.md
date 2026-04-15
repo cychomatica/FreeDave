@@ -1,0 +1,2 @@
+## Customized Modeling Files
+The modeling files on huggingface do not directly support flex attention, so we wrap them locally. For each DLM, we basically copy the original modeling file and make some tweaks to support flex attention.

@@ -26,11 +26,10 @@ from lm_eval.__main__ import cli_evaluate
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
+from modeling import get_model
 from transformers import AutoTokenizer
-from modeling.llada import LLaDAModelLM
 
 from generation.generation_core import DLMGeneration
-from generation.determinism_utils import setup_deterministic_env
 from generation.monitor_utils import ForwardMonitor
 
 
@@ -400,15 +399,8 @@ class Llada(LM):
             self.draft_mode = None
             self.eager_acceptance_mode = None
 
-        self.deterministic = kwargs.get('deterministic', False)
-        self.sdpa_backend = kwargs.get('sdpa_backend', None)
-        if self.deterministic:
-            setup_deterministic_env(seed=kwargs.get('seed', 42))
-
         self.dlm_generation = DLMGeneration(
             sdpa_additive_attention_mask=True,
-            deterministic=self.deterministic,
-            sdpa_backend=self.sdpa_backend,
         )
         self.forward_monitor = ForwardMonitor(self.model)
         
@@ -449,8 +441,8 @@ class Llada(LM):
 
     def _create_model_and_tokenizer(self, pretrained, dtype, trust_remote_code):
         self.model = (
-            LLaDAModelLM.from_pretrained(
-                pretrained,
+            get_model(
+                model_name=pretrained,
                 torch_dtype=get_dtype(dtype),
                 trust_remote_code=trust_remote_code,
             )

@@ -26,10 +26,10 @@ from lm_eval.__main__ import cli_evaluate
 
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'))
-from transformers import AutoTokenizer, AutoModelForCausalLM
+from modeling import get_model
+from transformers import AutoTokenizer
 
 from generation.generation_core import DLMGeneration
-from generation.determinism_utils import setup_deterministic_env
 from generation.monitor_utils import ForwardMonitor
 
 
@@ -55,7 +55,7 @@ def _inference_summary_table(summary: dict) -> str:
         return ""
     cell_widths = [max(len(key), len(val)) for key, val in zip(keys, vals)]
     return (
-        "\n|"
+        "\n\n|"
         + "|".join(key.center(width) for key, width in zip(keys, cell_widths))
         + "|\n|"
         + "|".join("-" * width for width in cell_widths)
@@ -393,15 +393,12 @@ class Trado(LM):
             self.draft_mode = None
             self.eager_acceptance_mode = None
 
-        self.deterministic = kwargs.get('deterministic', False)
-        self.sdpa_backend = kwargs.get('sdpa_backend', None)
-        if self.deterministic:
-            setup_deterministic_env(seed=kwargs.get('seed', 42))
-
+        self.use_flex_attention = kwargs.get('use_flex_attention', False)
+        if self.use_flex_attention:
+            self.model.config._generation_use_flex_attention = True
         self.dlm_generation = DLMGeneration(
             sdpa_additive_attention_mask=False,
-            deterministic=self.deterministic,
-            sdpa_backend=self.sdpa_backend,
+            use_flex_attention=self.use_flex_attention
         )
         self.inference_monitor = ForwardMonitor(self.model)
         
@@ -440,8 +437,8 @@ class Trado(LM):
 
     def _create_model_and_tokenizer(self, pretrained, dtype, trust_remote_code):
         self.model = (
-            AutoModelForCausalLM.from_pretrained(
-                pretrained,
+            get_model(
+                model_name=pretrained,
                 torch_dtype=get_dtype(dtype),
                 trust_remote_code=trust_remote_code,
             )

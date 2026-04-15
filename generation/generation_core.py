@@ -12,9 +12,7 @@ from .sampling_utils import sample_tokens
 import math
 from transformers.cache_utils import DynamicCache
 from .cache_utils import DynamicDualCache
-from .determinism_utils import deterministic_sdpa
 from dataclasses import dataclass
-from contextlib import nullcontext
 
 logger = logging.get_logger(__name__)
 
@@ -107,9 +105,8 @@ class DLMGeneration:
     def __init__(
         self,
         sdpa_additive_attention_mask: bool = False,
+        use_flex_attention: bool = False,
         seed: Optional[int] = None,
-        deterministic: bool = False,
-        sdpa_backend: Optional[str] = None,
     ):
         """
         Args:
@@ -118,23 +115,12 @@ class DLMGeneration:
                 internally (e.g. LLaDA/Dream SDPA). Keep False for TraDo/SDAR, which expect 1/0 and convert
                 inside `SDARAttention`.
             seed: Random seed for reproducibility (unused here; kept for caller convenience).
-            deterministic: If True, force a single SDPA backend for every forward pass so that baseline and
-                FreeDave follow identical floating-point code-paths (eliminates Flash-vs-Math kernel divergence).
-            sdpa_backend: SDPA backend to force when ``deterministic=True``.  One of ``"math"`` (default/safest),
-                ``"mem_efficient"``, or ``"flash"``.
         """
         self.device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
         self.token_per_step = 1
         self.sdpa_additive_attention_mask = sdpa_additive_attention_mask
+        self.use_flex_attention = use_flex_attention
         self.seed = seed
-        self.deterministic = deterministic
-        self.sdpa_backend = sdpa_backend
-
-    def _sdpa_ctx(self):
-        """Return a context manager that pins the SDPA backend when deterministic mode is on."""
-        if self.deterministic:
-            return deterministic_sdpa(self.sdpa_backend)
-        return nullcontext()
 
     def get_processed_model_outputs(
         self, 
@@ -159,36 +145,35 @@ class DLMGeneration:
                 _w_dtype = torch.float32
             attention_mask = visibility_mask_to_sdpa_additive(attention_mask, _w_dtype)
 
-        with self._sdpa_ctx():
-            if is_ar_adapted_dlm_model(model):
-                model_output = model(
-                    input_ids=x,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    past_key_values=past_key_values,
-                    use_cache=use_cache,
-                    output_attentions=output_attentions,
-                )
-                logits = model_output.logits
-                logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
-                attentions = model_output.attentions if output_attentions and hasattr(model_output, 'attentions') else None
+        if is_ar_adapted_dlm_model(model):
+            model_output = model(
+                input_ids=x,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+            )
+            logits = model_output.logits
+            logits = torch.cat([logits[:,:1], logits[:, :-1]], dim=1)
+            attentions = model_output.attentions if output_attentions and hasattr(model_output, 'attentions') else None
 
-                return logits, attentions
+            return logits, attentions
 
-            else:
-                model_output = model(
-                    input_ids=x,
-                    attention_mask=attention_mask,
-                    position_ids=position_ids,
-                    past_key_values=past_key_values,
-                    use_cache=use_cache,
-                    output_attentions=output_attentions,
-                    store_kv=store_kv,
-                )
-                logits = model_output.logits
-                attentions = model_output.attentions if output_attentions and hasattr(model_output, 'attentions') else None
+        else:
+            model_output = model(
+                input_ids=x,
+                attention_mask=attention_mask,
+                position_ids=position_ids,
+                past_key_values=past_key_values,
+                use_cache=use_cache,
+                output_attentions=output_attentions,
+                store_kv=store_kv,
+            )
+            logits = model_output.logits
+            attentions = model_output.attentions if output_attentions and hasattr(model_output, 'attentions') else None
 
-                return logits, attentions
+            return logits, attentions
 
     def get_attention_mask_and_position_ids(
         self, 

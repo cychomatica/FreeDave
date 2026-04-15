@@ -103,7 +103,6 @@ class DynamicDualCache(DynamicCache):
         prefix_value = base_value[:, :, : self.prefix_end, :]
         suffix_key = base_key[:, :, self.suffix_start :, :]
         suffix_value = base_value[:, :, self.suffix_start :, :]
-
         out_key = torch.cat([prefix_key, key_states, suffix_key], dim=-2)
         out_value = torch.cat([prefix_value, value_states, suffix_value], dim=-2)
         return out_key, out_value

@@ -1,8 +1,10 @@
 #!/bin/bash
 model=Dream-org/Dream-v0-Instruct-7B
 model_basename=$(basename $model)
+EVAL_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+TASK_INCLUDE_PATH="${EVAL_ROOT}/tasks"
 
-tasks="humaneval_instruct mbpp_instruct minerva_math500 gsm8k"
+tasks="humaneval_instruct mbpp_instruct minerva_math500 gsm8k_math_verify"
 nshots="0 3 4 5"
 lengths="1024 1024 1024 1024"
 block_lengths="32 32 32 32"
@@ -21,13 +23,12 @@ read -ra ALG_TEMP_ARRAY <<< "$alg_temps"
 read -ra CONFIDENCE_THRESHOLDS_ARRAY <<< "$confidence_thresholds"
 read -ra DRAFT_STEPS_ARRAY <<< "$draft_steps"
 export HF_ALLOW_CODE_EVAL=1
-export CUBLAS_WORKSPACE_CONFIG=:4096:8
 
 EARLY_EXIT=True
 DRAFT_MODE="tree_attention"
 EAGER_ACCEPTANCE_MODE=False
 DUAL_CACHE=True
-DETERMINISTIC=True
+USE_FLEX_ATTENTION=True
 
 # Iterate through the arrays
 for i in "${!TASKS_ARRAY[@]}"; do
@@ -36,35 +37,41 @@ for i in "${!TASKS_ARRAY[@]}"; do
     echo "Task: ${TASKS_ARRAY[$i]}, Shots: ${NSHOTS_ARRAY[$i]}, Model: ${model_basename}, Decoding Strategy: base, alg_temp: ${ALG_TEMP_ARRAY[$i]}"
     echo "Output: $output_path"
     accelerate launch eval_dream.py --model dream \
-        --model_args pretrained=${model},max_new_tokens=${LENGTH_ARRAY[$i]},diffusion_steps=${LENGTH_ARRAY[$i]},block_length=${BLOCK_LENGTH_ARRAY[$i]},add_bos_token=true,temperature=${TEMP_ARRAY[$i]},alg_temp=${ALG_TEMP_ARRAY[$i]},dual_cache=${DUAL_CACHE},early_exit=${EARLY_EXIT},deterministic=${DETERMINISTIC} \
+        --model_args pretrained=${model},max_new_tokens=${LENGTH_ARRAY[$i]},diffusion_steps=${LENGTH_ARRAY[$i]},block_length=${BLOCK_LENGTH_ARRAY[$i]},add_bos_token=true,temperature=${TEMP_ARRAY[$i]},alg_temp=${ALG_TEMP_ARRAY[$i]},dual_cache=${DUAL_CACHE},early_exit=${EARLY_EXIT},use_flex_attention=${USE_FLEX_ATTENTION} \
+        --include_path "${TASK_INCLUDE_PATH}" \
         --tasks ${TASKS_ARRAY[$i]} \
         --num_fewshot ${NSHOTS_ARRAY[$i]} \
         --batch_size 1 \
         --output_path $output_path \
         --log_samples \
-        --confirm_run_unsafe_code
+        --confirm_run_unsafe_code \
+        --apply_chat_template
     # confidence-aware parallel decoding
     output_path=evals_results/${model_basename}/${TASKS_ARRAY[$i]}-ns${NSHOTS_ARRAY[$i]}-parallel-tau=${CONFIDENCE_THRESHOLDS_ARRAY[$i]}
     echo "Task: ${TASKS_ARRAY[$i]}, Shots: ${NSHOTS_ARRAY[$i]}, Model: ${model_basename}, Decoding Strategy: parallel-tau=${CONFIDENCE_THRESHOLDS_ARRAY[$i]}, alg_temp: ${ALG_TEMP_ARRAY[$i]}"
     echo "Output: $output_path"
     accelerate launch eval_dream.py --model dream \
-        --model_args pretrained=${model},max_new_tokens=${LENGTH_ARRAY[$i]},diffusion_steps=${LENGTH_ARRAY[$i]},block_length=${BLOCK_LENGTH_ARRAY[$i]},add_bos_token=true,temperature=${TEMP_ARRAY[$i]},alg_temp=${ALG_TEMP_ARRAY[$i]},dual_cache=${DUAL_CACHE},confidence_threshold=${CONFIDENCE_THRESHOLDS_ARRAY[$i]},early_exit=${EARLY_EXIT},deterministic=${DETERMINISTIC} \
+        --model_args pretrained=${model},max_new_tokens=${LENGTH_ARRAY[$i]},diffusion_steps=${LENGTH_ARRAY[$i]},block_length=${BLOCK_LENGTH_ARRAY[$i]},add_bos_token=true,temperature=${TEMP_ARRAY[$i]},alg_temp=${ALG_TEMP_ARRAY[$i]},dual_cache=${DUAL_CACHE},confidence_threshold=${CONFIDENCE_THRESHOLDS_ARRAY[$i]},early_exit=${EARLY_EXIT},use_flex_attention=${USE_FLEX_ATTENTION} \
+        --include_path "${TASK_INCLUDE_PATH}" \
         --tasks ${TASKS_ARRAY[$i]} \
         --num_fewshot ${NSHOTS_ARRAY[$i]} \
         --batch_size 1 \
         --output_path $output_path \
         --log_samples \
-        --confirm_run_unsafe_code
+        --confirm_run_unsafe_code \
+        --apply_chat_template
     # FreeDave decoding
     output_path=evals_results/${model_basename}/${TASKS_ARRAY[$i]}-ns${NSHOTS_ARRAY[$i]}-freedave-d=${DRAFT_STEPS_ARRAY[$i]}
     echo "Task: ${TASKS_ARRAY[$i]}, Shots: ${NSHOTS_ARRAY[$i]}, Model: ${model_basename}, Decoding Strategy: freedave-d=${DRAFT_STEPS_ARRAY[$i]}, alg_temp: ${ALG_TEMP_ARRAY[$i]}"
     echo "Output: $output_path"
     accelerate launch eval_dream.py --model dream \
-        --model_args pretrained=${model},max_new_tokens=${LENGTH_ARRAY[$i]},diffusion_steps=${LENGTH_ARRAY[$i]},block_length=${BLOCK_LENGTH_ARRAY[$i]},add_bos_token=true,temperature=${TEMP_ARRAY[$i]},alg_temp=${ALG_TEMP_ARRAY[$i]},dual_cache=${DUAL_CACHE},decoding_alg=freedave,draft_steps=${DRAFT_STEPS_ARRAY[$i]},draft_mode=${DRAFT_MODE},eager_acceptance_mode=${EAGER_ACCEPTANCE_MODE},early_exit=${EARLY_EXIT},deterministic=${DETERMINISTIC} \
+        --model_args pretrained=${model},max_new_tokens=${LENGTH_ARRAY[$i]},diffusion_steps=${LENGTH_ARRAY[$i]},block_length=${BLOCK_LENGTH_ARRAY[$i]},add_bos_token=true,temperature=${TEMP_ARRAY[$i]},alg_temp=${ALG_TEMP_ARRAY[$i]},dual_cache=${DUAL_CACHE},decoding_alg=freedave,draft_steps=${DRAFT_STEPS_ARRAY[$i]},draft_mode=${DRAFT_MODE},eager_acceptance_mode=${EAGER_ACCEPTANCE_MODE},early_exit=${EARLY_EXIT},use_flex_attention=${USE_FLEX_ATTENTION} \
+        --include_path "${TASK_INCLUDE_PATH}" \
         --tasks ${TASKS_ARRAY[$i]} \
         --num_fewshot ${NSHOTS_ARRAY[$i]} \
         --batch_size 1 \
         --output_path $output_path \
         --log_samples \
-        --confirm_run_unsafe_code
+        --confirm_run_unsafe_code \
+        --apply_chat_template
 done
