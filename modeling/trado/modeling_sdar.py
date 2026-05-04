@@ -63,7 +63,7 @@ except ImportError:
 
 
 if is_torch_flex_attn_available():
-    from torch.nn.attention.flex_attention import BlockMask, create_block_mask, flex_attention
+    from torch.nn.attention.flex_attention import BlockMask, flex_attention
     from transformers.integrations.flex_attention import make_flex_block_causal_mask
 
     _compiled_flex_attention = torch.compile(flex_attention, dynamic=True)
@@ -590,16 +590,6 @@ class SDARModel(SDARPreTrainedModel):
         # create position embeddings to be shared across the decoder layers
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
 
-        if getattr(self.config, '_generation_use_flex_attention', False) and is_torch_flex_attn_available():
-            if isinstance(attention_mask, torch.Tensor):
-                _m = attention_mask.squeeze(0).squeeze(0).bool() if attention_mask.dim() == 4 else attention_mask.bool()
-                attention_mask = create_block_mask(
-                    lambda b, h, q_idx, kv_idx: _m[q_idx, kv_idx],
-                    B=None, H=None,
-                    Q_LEN=_m.shape[0], KV_LEN=_m.shape[1],
-                    device=hidden_states.device,
-                )
-
         # decoder layers
         all_hidden_states = () if output_hidden_states else None
         all_self_attns = () if output_attentions else None
@@ -667,13 +657,7 @@ class SDARModel(SDARPreTrainedModel):
             if isinstance(attention_mask, torch.Tensor):
                 seq_len_q, seq_len_kv = attention_mask.shape
                 assert seq_len_q == seq_len_kv, f"got {attention_mask.shape=}"
-                attention_mask = create_block_mask(
-                    # 2d bool tensor, shape: [2*seqlen, 2*seqlen]
-                    lambda b, h, q_idx, kv_idx: attention_mask[q_idx, kv_idx],
-                    B=None, H=None, Q_LEN=seq_len_q, KV_LEN=seq_len_kv,
-                )
-            else:
-                # Here we pass in flex mask computed externally
+            elif attention_mask is not None:
                 assert isinstance(attention_mask, BlockMask)
             return attention_mask
 

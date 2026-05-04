@@ -31,7 +31,6 @@ metric_list:
 generation_kwargs:
   until:
     - "Question:"
-    - " "
     - "<|im_end|>"
   do_sample: false
   temperature: 0.0

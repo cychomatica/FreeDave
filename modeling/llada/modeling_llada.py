@@ -1409,7 +1409,6 @@ class LLaDAModel(nn.Module):
         # shape: (batch_size, seq_len, d_model)
         x = self.transformer.emb_drop(x)  # type: ignore
 
-        # SDPA additive/boolean 4D mask from callers (e.g. ``generation_core`` full attention).
         if attention_mask is not None and attention_mask.dim() == 4:
             am = attention_mask
             if am.dtype == torch.bool:
@@ -1451,8 +1450,8 @@ class LLaDAModel(nn.Module):
                 attention_bias = attention_bias.to(dtype=torch.float)
                 attention_bias.masked_fill_(attention_bias == 0.0, torch.finfo(attention_bias.dtype).min)
 
-            # Transform to the right shape and data type.
             if attention_bias is not None and attention_bias.dim() == 4:
+                # Transform to the right shape and data type.
                 q_sz, k_sz = attention_bias.shape[2], attention_bias.shape[3]
                 attention_bias = attention_bias[:, :, :q_sz, :k_sz].to(dtype=torch.float)
             else:

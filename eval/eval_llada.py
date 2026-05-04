@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from modeling import get_model
 from transformers import AutoTokenizer
 
-from generation.generation_core import DLMGeneration
+from generation import DLMGeneration
 from generation.monitor_utils import ForwardMonitor
 
 
@@ -54,7 +54,7 @@ def _inference_summary_table(summary: dict) -> str:
         return ""
     cell_widths = [max(len(key), len(val)) for key, val in zip(keys, vals)]
     return (
-        "\n|"
+        "\n\n|"
         + "|".join(key.center(width) for key, width in zip(keys, cell_widths))
         + "|\n|"
         + "|".join("-" * width for width in cell_widths)
@@ -111,7 +111,7 @@ class Llada(LM):
                 # "num_generation_batches": n,
                 "Total Time (s)": total_time,
                 "Total NFE": total_nfe,
-                "Total Generated Tokens": total_tok,
+                "Total Gen Tokens": total_tok,
                 "Avg Fwd time (ms)": total_time * 1000 / total_nfe,
                 "Avg TPS": total_tok / total_time,
                 "Avg TPF": tpf,
@@ -401,8 +401,9 @@ class Llada(LM):
 
         self.dlm_generation = DLMGeneration(
             sdpa_additive_attention_mask=True,
+            device=self.device
         )
-        self.forward_monitor = ForwardMonitor(self.model)
+        self.inference_monitor = ForwardMonitor(self.model)
         
         self.inference_stats = {
             "inference_time": [],
@@ -452,6 +453,10 @@ class Llada(LM):
         self.tokenizer = AutoTokenizer.from_pretrained(
             pretrained, trust_remote_code=trust_remote_code
         )
+
+        self.mask_token_id=self.tokenizer.convert_tokens_to_ids("<|mdm_mask|>")
+        self.eos_token_id=self.tokenizer.convert_tokens_to_ids("<|endoftext|>")
+        self.pad_token_id=self.tokenizer.convert_tokens_to_ids("<|endoftext|>")
 
     def tok_decode(self, tokens, skip_special_tokens=True):
         return self.tokenizer.decode(tokens, skip_special_tokens=skip_special_tokens)
@@ -512,7 +517,7 @@ class Llada(LM):
         attn_mask = attn_mask.to(device=self.device)
 
         if self.decoding_alg == 'base':
-            with self.forward_monitor.count():
+            with self.inference_monitor.count():
                 outputs = self.dlm_generation.block_decode_with_full_attention(
                     model=self.model,
                     input_ids=prompt_ids,
@@ -526,13 +531,14 @@ class Llada(LM):
                     decoding_steps=self.diffusion_steps,
                     use_cache=True,
                     dual_cache=self.dual_cache,
-                    mask_token_id=self.tokenizer.convert_tokens_to_ids("<|mdm_mask|>"),
-                    eos_token_id=self.tokenizer.convert_tokens_to_ids("<|endoftext|>"),
-                    pad_token_id=self.tokenizer.convert_tokens_to_ids("<|endoftext|>"),
+                    mask_token_id=self.mask_token_id,
+                    eos_token_id=self.eos_token_id,
+                    pad_token_id=self.pad_token_id,
+                    confidence_threshold=self.confidence_threshold,
                     early_exit=self.early_exit,
                 )
         elif self.decoding_alg == 'freedave':
-            with self.forward_monitor.count():
+            with self.inference_monitor.count():
                 outputs = self.dlm_generation.block_decode_with_full_attention_FreeDave(
                     model=self.model,
                     input_ids=prompt_ids,
@@ -549,9 +555,10 @@ class Llada(LM):
                     eager_acceptance_mode=self.eager_acceptance_mode,
                     draft_steps=self.draft_steps,
                     draft_mode=self.draft_mode,
-                    mask_token_id=self.tokenizer.convert_tokens_to_ids("<|mdm_mask|>"),
-                    eos_token_id=self.tokenizer.convert_tokens_to_ids("<|endoftext|>"),
-                    pad_token_id=self.tokenizer.convert_tokens_to_ids("<|endoftext|>"),
+                    mask_token_id=self.mask_token_id,
+                    eos_token_id=self.eos_token_id,
+                    pad_token_id=self.pad_token_id,
+                    confidence_threshold=self.confidence_threshold,
                     early_exit=self.early_exit,
                 )
         else:
@@ -563,13 +570,13 @@ class Llada(LM):
             for p, g in zip(prompt_ids, outputs.sequences)
         ]
 
-        self.inference_stats["inference_time"].append(self.forward_monitor.get_elapsed_time())
-        self.inference_stats["nfe"].append(self.forward_monitor.get_nfe())
+        self.inference_stats["inference_time"].append(self.inference_monitor.get_elapsed_time())
+        self.inference_stats["nfe"].append(self.inference_monitor.get_nfe())
         self.inference_stats["generated_tokens"].append(
             int((outputs.trajectory_step_map >= 0).sum().item())
         )
         # self.inference_stats["generated_tokens"].append(sum([g[len(p) :].numel() for p, g in zip(prompt_ids, generation_ids)]))
-        self.forward_monitor.reset()
+        self.inference_monitor.reset()
         torch.cuda.empty_cache()
 
         return responses

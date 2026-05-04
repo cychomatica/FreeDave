@@ -50,7 +50,7 @@ if is_flash_attn_2_available():
     from transformers.modeling_flash_attention_utils import _flash_attention_forward
 
 if is_torch_flex_attn_available():
-    from torch.nn.attention.flex_attention import BlockMask, create_block_mask, flex_attention
+    from torch.nn.attention.flex_attention import BlockMask, flex_attention
 
     _compiled_flex_attention = torch.compile(flex_attention, dynamic=True)
 
@@ -693,16 +693,6 @@ class DreamBaseModel(DreamPreTrainedModel):
 
         # create position embeddings to be shared across the decoder layers
         position_embeddings = self.rotary_emb(hidden_states, position_ids)
-
-        if getattr(self.config, '_generation_use_flex_attention', False) and is_torch_flex_attn_available():
-            if isinstance(attention_mask, torch.Tensor):
-                _m = attention_mask.squeeze(0).squeeze(0).bool() if attention_mask.dim() == 4 else attention_mask.bool()
-                attention_mask = create_block_mask(
-                    lambda b, h, q_idx, kv_idx: _m[q_idx, kv_idx],
-                    B=None, H=None,
-                    Q_LEN=_m.shape[0], KV_LEN=_m.shape[1],
-                    device=hidden_states.device,
-                )
 
         # decoder layers
         all_hidden_states = () if output_hidden_states else None

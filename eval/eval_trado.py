@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from modeling import get_model
 from transformers import AutoTokenizer
 
-from generation.generation_core import DLMGeneration
+from generation import DLMGeneration
 from generation.monitor_utils import ForwardMonitor
 
 
@@ -84,6 +84,8 @@ class Trado(LM):
 
         nf = inst.inference_stats["nfe"]
         tok = inst.inference_stats["generated_tokens"]
+        ptok = inst.inference_stats["num_proposed_tokens"]
+        htok = inst.inference_stats["num_hit_tokens"]
 
         def _scalar_int(x):
             if hasattr(x, "item"):
@@ -98,21 +100,26 @@ class Trado(LM):
         tok_i = [_scalar_int(t) for t in tok]
         nf_i = [_scalar_int(x) for x in nf]
         ts_f = [_scalar_float(x) for x in ts]
+        ptok_i = [_scalar_int(x) for x in ptok]
+        htok_i = [_scalar_int(x) for x in htok]
 
         # n = len(ts_f)
         total_time = sum(ts_f)
         total_nfe = sum(nf_i)
         total_tok = sum(tok_i)
+        total_ptok = sum(ptok_i)
+        total_htok = sum(htok_i)
         tpf = (total_tok / total_nfe) if total_nfe else None
         payload: dict = {
             "summary": {
                 # "num_generation_batches": n,
                 "Total Time (s)": total_time,
                 "Total NFE": total_nfe,
-                "Total Generated Tokens": total_tok,
+                "Total Gen Tokens": total_tok,
                 "Avg Fwd time (ms)": total_time * 1000 / total_nfe,
                 "Avg TPS": total_tok / total_time,
                 "Avg TPF": tpf,
+                "Hit Rate": total_htok / total_ptok,
             },
             "per_batch": {
                 "inference_time_s": ts_f,
@@ -393,19 +400,18 @@ class Trado(LM):
             self.draft_mode = None
             self.eager_acceptance_mode = None
 
-        self.use_flex_attention = kwargs.get('use_flex_attention', False)
-        if self.use_flex_attention:
-            self.model.config._generation_use_flex_attention = True
         self.dlm_generation = DLMGeneration(
             sdpa_additive_attention_mask=False,
-            use_flex_attention=self.use_flex_attention
+            device=self.device
         )
         self.inference_monitor = ForwardMonitor(self.model)
         
         self.inference_stats = {
             "inference_time": [],
             "nfe": [],
-            "generated_tokens": []
+            "generated_tokens": [],
+            "num_proposed_tokens": [],
+            "num_hit_tokens": []
         }
 
         # Optional sidecar JSON / log line: handled in ``_emit_inference_stats_for_eval`` when lm_eval saves.
@@ -448,6 +454,10 @@ class Trado(LM):
         self.tokenizer = AutoTokenizer.from_pretrained(
             pretrained, trust_remote_code=trust_remote_code
         )
+
+        self.mask_token_id=self.tokenizer.added_tokens_encoder[self.tokenizer.special_tokens_map['mask_token']]
+        self.eos_token_id=self.tokenizer.added_tokens_encoder[self.tokenizer.special_tokens_map['eos_token']]
+        self.pad_token_id=self.tokenizer.added_tokens_encoder[self.tokenizer.special_tokens_map['pad_token']]
 
     def tok_decode(self, tokens, skip_special_tokens=True):
         return self.tokenizer.decode(tokens, skip_special_tokens=skip_special_tokens)
@@ -522,9 +532,9 @@ class Trado(LM):
                     max_gen_length=self.max_new_tokens,
                     decoding_steps=self.diffusion_steps,
                     use_cache=True,
-                    mask_token_id=self.tokenizer.added_tokens_encoder[self.tokenizer.special_tokens_map['mask_token']],
-                    eos_token_id=self.tokenizer.added_tokens_encoder[self.tokenizer.special_tokens_map['eos_token']],
-                    pad_token_id=self.tokenizer.added_tokens_encoder[self.tokenizer.special_tokens_map['pad_token']],
+                    mask_token_id=self.mask_token_id,
+                    eos_token_id=self.eos_token_id,
+                    pad_token_id=self.pad_token_id,
                     confidence_threshold=self.confidence_threshold,
                     early_exit=self.early_exit,
                 )
@@ -545,9 +555,10 @@ class Trado(LM):
                     eager_acceptance_mode=self.eager_acceptance_mode,
                     draft_steps=self.draft_steps,
                     draft_mode=self.draft_mode,
-                    mask_token_id=self.tokenizer.added_tokens_encoder[self.tokenizer.special_tokens_map['mask_token']],
-                    eos_token_id=self.tokenizer.added_tokens_encoder[self.tokenizer.special_tokens_map['eos_token']],
-                    pad_token_id=self.tokenizer.added_tokens_encoder[self.tokenizer.special_tokens_map['pad_token']],
+                    mask_token_id=self.mask_token_id,
+                    eos_token_id=self.eos_token_id,
+                    pad_token_id=self.pad_token_id,
+                    confidence_threshold=self.confidence_threshold,
                     early_exit=self.early_exit,
                 )
         else:
@@ -563,8 +574,9 @@ class Trado(LM):
         self.inference_stats["nfe"].append(self.inference_monitor.get_nfe())
         self.inference_stats["generated_tokens"].append(
             int((outputs.trajectory_step_map >= 0).sum().item())
-        )
-        # self.inference_stats["generated_tokens"].append(sum([g[len(p) :].numel() for p, g in zip(prompt_ids, generation_ids)]))
+        ) # only count generated tokens and exclude tokens filled by early exit
+        self.inference_stats["num_proposed_tokens"].append(outputs.num_proposed_tokens)
+        self.inference_stats["num_hit_tokens"].append(outputs.num_hit_tokens)
         self.inference_monitor.reset()
         torch.cuda.empty_cache()
 

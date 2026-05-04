@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), '..'
 from modeling import get_model
 from transformers import AutoTokenizer
 
-from generation.generation_core import DLMGeneration
+from generation import DLMGeneration
 from generation.monitor_utils import ForwardMonitor
 
 
@@ -111,7 +111,7 @@ class Dream(LM):
                 # "num_generation_batches": n,
                 "Total Time (s)": total_time,
                 "Total NFE": total_nfe,
-                "Total Generated Tokens": total_tok,
+                "Total Gen Tokens": total_tok,
                 "Avg Fwd time (ms)": total_time * 1000 / total_nfe,
                 "Avg TPS": total_tok / total_time,
                 "Avg TPF": tpf,
@@ -238,7 +238,7 @@ class Dream(LM):
         dtype: Optional[Union[str, torch.dtype]] = "auto",
         max_new_tokens: Optional[int] = 512,
         max_length: Optional[int] = 4096,
-        add_bos_token: Optional[bool] = False,
+        add_bos_token: Optional[bool] = True,
         nll_type: Optional[str] = "mc",
         log_type: Optional[str] = "ftb",
         mc_num: Optional[int] = 128,
@@ -399,14 +399,11 @@ class Dream(LM):
             self.draft_mode = None
             self.eager_acceptance_mode = None
 
-        self.use_flex_attention = kwargs.get('use_flex_attention', False)
-        if self.use_flex_attention:
-            self.model.config._generation_use_flex_attention = True
         self.dlm_generation = DLMGeneration(
-            sdpa_additive_attention_mask=not self.use_flex_attention,
-            use_flex_attention=self.use_flex_attention,
+            sdpa_additive_attention_mask=True,
+            device=self.device
         )
-        self.forward_monitor = ForwardMonitor(self.model)
+        self.inference_monitor = ForwardMonitor(self.model)
         
         self.inference_stats = {
             "inference_time": [],
@@ -456,6 +453,10 @@ class Dream(LM):
         self.tokenizer = AutoTokenizer.from_pretrained(
             pretrained, trust_remote_code=trust_remote_code
         )
+
+        self.mask_token_id=self.tokenizer.added_tokens_encoder[self.tokenizer.special_tokens_map['mask_token']]
+        self.eos_token_id=self.tokenizer.added_tokens_encoder[self.tokenizer.special_tokens_map['eos_token']]
+        self.pad_token_id=self.tokenizer.added_tokens_encoder[self.tokenizer.special_tokens_map['pad_token']]
 
     def tok_decode(self, tokens, skip_special_tokens=True):
         return self.tokenizer.decode(tokens, skip_special_tokens=skip_special_tokens)
@@ -516,7 +517,7 @@ class Dream(LM):
         attn_mask = attn_mask.to(device=self.device)
 
         if self.decoding_alg == 'base':
-            with self.forward_monitor.count():
+            with self.inference_monitor.count():
                 outputs = self.dlm_generation.block_decode_with_full_attention(
                     model=self.model,
                     input_ids=prompt_ids,
@@ -530,14 +531,14 @@ class Dream(LM):
                     decoding_steps=self.diffusion_steps,
                     use_cache=True,
                     dual_cache=self.dual_cache,
-                    mask_token_id=self.tokenizer.added_tokens_encoder[self.tokenizer.special_tokens_map['mask_token']],
-                    eos_token_id=self.tokenizer.added_tokens_encoder[self.tokenizer.special_tokens_map['eos_token']],
-                    pad_token_id=self.tokenizer.added_tokens_encoder[self.tokenizer.special_tokens_map['pad_token']],
+                    mask_token_id=self.mask_token_id,
+                    eos_token_id=self.eos_token_id,
+                    pad_token_id=self.pad_token_id,
                     confidence_threshold=self.confidence_threshold,
                     early_exit=self.early_exit,
                 )
         elif self.decoding_alg == 'freedave':
-            with self.forward_monitor.count():
+            with self.inference_monitor.count():
                 outputs = self.dlm_generation.block_decode_with_full_attention_FreeDave(
                     model=self.model,
                     input_ids=prompt_ids,
@@ -554,9 +555,10 @@ class Dream(LM):
                     eager_acceptance_mode=self.eager_acceptance_mode,
                     draft_steps=self.draft_steps,
                     draft_mode=self.draft_mode,
-                    mask_token_id=self.tokenizer.added_tokens_encoder[self.tokenizer.special_tokens_map['mask_token']],
-                    eos_token_id=self.tokenizer.added_tokens_encoder[self.tokenizer.special_tokens_map['eos_token']],
-                    pad_token_id=self.tokenizer.added_tokens_encoder[self.tokenizer.special_tokens_map['pad_token']],
+                    mask_token_id=self.mask_token_id,
+                    eos_token_id=self.eos_token_id,
+                    pad_token_id=self.pad_token_id,
+                    confidence_threshold=self.confidence_threshold,
                     early_exit=self.early_exit,
                 )
         else:
@@ -568,13 +570,13 @@ class Dream(LM):
             for p, g in zip(prompt_ids, outputs.sequences)
         ]
 
-        self.inference_stats["inference_time"].append(self.forward_monitor.get_elapsed_time())
-        self.inference_stats["nfe"].append(self.forward_monitor.get_nfe())
+        self.inference_stats["inference_time"].append(self.inference_monitor.get_elapsed_time())
+        self.inference_stats["nfe"].append(self.inference_monitor.get_nfe())
         self.inference_stats["generated_tokens"].append(
             int((outputs.trajectory_step_map >= 0).sum().item())
         )
         # self.inference_stats["generated_tokens"].append(sum([g[len(p) :].numel() for p, g in zip(prompt_ids, generation_ids)]))
-        self.forward_monitor.reset()
+        self.inference_monitor.reset()
         torch.cuda.empty_cache()
 
         return responses

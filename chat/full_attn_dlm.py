@@ -1,19 +1,20 @@
 import torch
-from transformers import AutoTokenizer, AutoModel
+from modeling import get_model
+from transformers import AutoTokenizer
 from termcolor import cprint
 import os
 from generation.monitor_utils import ForwardMonitor
-from generation.generation_core import DLMGeneration
+from generation import DLMGeneration
 import argparse
 
 def main(args):
     
     model_name = args.model_name
-    model = AutoModel.from_pretrained(
-        model_name, 
-        torch_dtype='float16', 
+    model = get_model(
+        model_name=model_name, 
+        torch_dtype='auto', 
         device_map='cuda',
-        trust_remote_code=True
+        trust_remote_code=True,
     )
     tokenizer = AutoTokenizer.from_pretrained(model_name, trust_remote_code=True)
     model.eval()
