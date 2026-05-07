@@ -1,5 +1,5 @@
 #!/bin/bash
-model=Dream-org/Dream-v0-Instruct-7B
+model="${1:-"Dream-org/Dream-v0-Instruct-7B"}"
 model_basename=$(basename $model)
 EVAL_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TASK_INCLUDE_PATH="${EVAL_ROOT}/tasks"
@@ -13,7 +13,7 @@ block_lengths="32 32 32 32"
 temperatures="0 0 0 0" # sampling temperature; default 0
 alg_temps="0 0 0 0" # unmasking temperature; -1: l2r, 0: static
 confidence_thresholds="0.95 0.95 0.95 0.95"
-draft_steps="4 4 4 4"
+draft_steps="8 8 8 8"
 algs="static parallel freedave freedave++"
 echo "Tasks: $tasks"
 echo "Algorithms: $algs"

@@ -103,6 +103,7 @@ class DLMGeneration:
             try:
                 w_dtype = next(model.parameters()).dtype
             except StopIteration:
+                logger.warning('No parameters found in the model, using float32 as default.')
                 w_dtype = torch.float32
             return visibility_mask_to_sdpa_additive(attention_mask, w_dtype)
 

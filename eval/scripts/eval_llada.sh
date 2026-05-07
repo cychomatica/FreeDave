@@ -1,5 +1,5 @@
 #!/bin/bash
-model=GSAI-ML/LLaDA-8B-Instruct
+model="${1:-"GSAI-ML/LLaDA-8B-Instruct"}"
 model_basename=$(basename $model)
 EVAL_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 TASK_INCLUDE_PATH="${EVAL_ROOT}/tasks"
@@ -23,7 +23,6 @@ EARLY_EXIT=True
 DRAFT_MODE="tree_attention"
 EAGER_ACCEPTANCE_MODE=False
 DUAL_CACHE=True
-USE_FLEX_ATTENTION=False
 
 # Create arrays from space-separated strings
 read -ra TASKS_ARRAY <<< "$tasks"
@@ -44,7 +43,7 @@ for i in "${!TASKS_ARRAY[@]}"; do
             echo "Task: ${TASKS_ARRAY[$i]}, Shots: ${NSHOTS_ARRAY[$i]}, Model: ${model_basename}, Decoding Strategy: base, alg_temp: ${ALG_TEMP_ARRAY[$i]}"
             echo "Output: $output_path"
             accelerate launch eval_llada.py --model llada \
-                --model_args pretrained=${model},max_new_tokens=${LENGTH_ARRAY[$i]},diffusion_steps=${LENGTH_ARRAY[$i]},block_length=${BLOCK_LENGTH_ARRAY[$i]},temperature=${TEMP_ARRAY[$i]},alg_temp=${ALG_TEMP_ARRAY[$i]},dual_cache=${DUAL_CACHE},early_exit=${EARLY_EXIT},use_flex_attention=${USE_FLEX_ATTENTION} \
+                --model_args pretrained=${model},max_new_tokens=${LENGTH_ARRAY[$i]},diffusion_steps=${LENGTH_ARRAY[$i]},block_length=${BLOCK_LENGTH_ARRAY[$i]},temperature=${TEMP_ARRAY[$i]},alg_temp=${ALG_TEMP_ARRAY[$i]},dual_cache=${DUAL_CACHE},early_exit=${EARLY_EXIT} \
                 --include_path "${TASK_INCLUDE_PATH}" \
                 --tasks ${TASKS_ARRAY[$i]} \
                 --num_fewshot ${NSHOTS_ARRAY[$i]} \
@@ -58,7 +57,7 @@ for i in "${!TASKS_ARRAY[@]}"; do
             echo "Task: ${TASKS_ARRAY[$i]}, Shots: ${NSHOTS_ARRAY[$i]}, Model: ${model_basename}, Decoding Strategy: parallel-tau=${CONFIDENCE_THRESHOLDS_ARRAY[$i]}, alg_temp: ${ALG_TEMP_ARRAY[$i]}"
             echo "Output: $output_path"
             accelerate launch eval_llada.py --model llada \
-                --model_args pretrained=${model},max_new_tokens=${LENGTH_ARRAY[$i]},diffusion_steps=${LENGTH_ARRAY[$i]},block_length=${BLOCK_LENGTH_ARRAY[$i]},temperature=${TEMP_ARRAY[$i]},alg_temp=${ALG_TEMP_ARRAY[$i]},dual_cache=${DUAL_CACHE},confidence_threshold=${CONFIDENCE_THRESHOLDS_ARRAY[$i]},early_exit=${EARLY_EXIT},use_flex_attention=${USE_FLEX_ATTENTION} \
+                --model_args pretrained=${model},max_new_tokens=${LENGTH_ARRAY[$i]},diffusion_steps=${LENGTH_ARRAY[$i]},block_length=${BLOCK_LENGTH_ARRAY[$i]},temperature=${TEMP_ARRAY[$i]},alg_temp=${ALG_TEMP_ARRAY[$i]},dual_cache=${DUAL_CACHE},confidence_threshold=${CONFIDENCE_THRESHOLDS_ARRAY[$i]},early_exit=${EARLY_EXIT} \
                 --include_path "${TASK_INCLUDE_PATH}" \
                 --tasks ${TASKS_ARRAY[$i]} \
                 --num_fewshot ${NSHOTS_ARRAY[$i]} \
@@ -72,7 +71,7 @@ for i in "${!TASKS_ARRAY[@]}"; do
             echo "Task: ${TASKS_ARRAY[$i]}, Shots: ${NSHOTS_ARRAY[$i]}, Model: ${model_basename}, Decoding Strategy: freedave-d=${DRAFT_STEPS_ARRAY[$i]}, alg_temp: ${ALG_TEMP_ARRAY[$i]}"
             echo "Output: $output_path"
             accelerate launch eval_llada.py --model llada \
-                --model_args pretrained=${model},max_new_tokens=${LENGTH_ARRAY[$i]},diffusion_steps=${LENGTH_ARRAY[$i]},block_length=${BLOCK_LENGTH_ARRAY[$i]},temperature=${TEMP_ARRAY[$i]},alg_temp=${ALG_TEMP_ARRAY[$i]},dual_cache=${DUAL_CACHE},decoding_alg=freedave,draft_steps=${DRAFT_STEPS_ARRAY[$i]},draft_mode=${DRAFT_MODE},eager_acceptance_mode=${EAGER_ACCEPTANCE_MODE},early_exit=${EARLY_EXIT},use_flex_attention=${USE_FLEX_ATTENTION} \
+                --model_args pretrained=${model},max_new_tokens=${LENGTH_ARRAY[$i]},diffusion_steps=${LENGTH_ARRAY[$i]},block_length=${BLOCK_LENGTH_ARRAY[$i]},temperature=${TEMP_ARRAY[$i]},alg_temp=${ALG_TEMP_ARRAY[$i]},dual_cache=${DUAL_CACHE},decoding_alg=freedave,draft_steps=${DRAFT_STEPS_ARRAY[$i]},draft_mode=${DRAFT_MODE},eager_acceptance_mode=${EAGER_ACCEPTANCE_MODE},early_exit=${EARLY_EXIT} \
                 --include_path "${TASK_INCLUDE_PATH}" \
                 --tasks ${TASKS_ARRAY[$i]} \
                 --num_fewshot ${NSHOTS_ARRAY[$i]} \
@@ -86,7 +85,7 @@ for i in "${!TASKS_ARRAY[@]}"; do
             echo "Task: ${TASKS_ARRAY[$i]}, Shots: ${NSHOTS_ARRAY[$i]}, Model: ${model_basename}, Decoding Strategy: freedave-d=${DRAFT_STEPS_ARRAY[$i]}-tau=${CONFIDENCE_THRESHOLDS_ARRAY[$i]}, alg_temp: ${ALG_TEMP_ARRAY[$i]}"
             echo "Output: $output_path"
             accelerate launch eval_llada.py --model llada \
-                --model_args pretrained=${model},max_new_tokens=${LENGTH_ARRAY[$i]},diffusion_steps=${LENGTH_ARRAY[$i]},block_length=${BLOCK_LENGTH_ARRAY[$i]},temperature=${TEMP_ARRAY[$i]},alg_temp=${ALG_TEMP_ARRAY[$i]},dual_cache=${DUAL_CACHE},decoding_alg=freedave,draft_steps=${DRAFT_STEPS_ARRAY[$i]},confidence_threshold=${CONFIDENCE_THRESHOLDS_ARRAY[$i]},draft_mode=${DRAFT_MODE},eager_acceptance_mode=${EAGER_ACCEPTANCE_MODE},early_exit=${EARLY_EXIT},use_flex_attention=${USE_FLEX_ATTENTION} \
+                --model_args pretrained=${model},max_new_tokens=${LENGTH_ARRAY[$i]},diffusion_steps=${LENGTH_ARRAY[$i]},block_length=${BLOCK_LENGTH_ARRAY[$i]},temperature=${TEMP_ARRAY[$i]},alg_temp=${ALG_TEMP_ARRAY[$i]},dual_cache=${DUAL_CACHE},decoding_alg=freedave,draft_steps=${DRAFT_STEPS_ARRAY[$i]},confidence_threshold=${CONFIDENCE_THRESHOLDS_ARRAY[$i]},draft_mode=${DRAFT_MODE},eager_acceptance_mode=${EAGER_ACCEPTANCE_MODE},early_exit=${EARLY_EXIT} \
                 --include_path "${TASK_INCLUDE_PATH}" \
                 --tasks ${TASKS_ARRAY[$i]} \
                 --num_fewshot ${NSHOTS_ARRAY[$i]} \

@@ -8,7 +8,7 @@ def top_k_logits(logits, k):
         values, _ = torch.topk(logits, k)
         min_values = values[..., -1, None]
         return torch.where(
-            logits < min_values, torch.full_like(logits, float("-inf")), logits
+            logits < min_values, torch.full_like(logits, -torch.inf), logits
         )
 
 def top_p_logits(logits, p):
@@ -25,7 +25,7 @@ def top_p_logits(logits, p):
         sorted_indices,
         sorted_mask,
     )
-    return logits.masked_fill(mask_indices, float("-inf"))
+    return logits.masked_fill(mask_indices, -torch.inf)
 
 def sample_tokens(logits, temperature=1.0, top_k=None, top_p=None):
     orig_shape = logits.shape[:-1]

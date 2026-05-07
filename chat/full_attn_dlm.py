@@ -1,5 +1,5 @@
 import torch
-from modeling import get_model
+from modeling import get_model, get_special_tokens
 from transformers import AutoTokenizer
 from termcolor import cprint
 import os
@@ -12,7 +12,7 @@ def main(args):
     model_name = args.model_name
     model = get_model(
         model_name=model_name, 
-        torch_dtype='auto', 
+        torch_dtype='float16', 
         device_map='cuda',
         trust_remote_code=True,
     )
@@ -65,15 +65,15 @@ def main(args):
                 decoding_steps=args.max_gen_length,
                 use_cache=True,
                 dual_cache=args.dual_cache,
-                mask_token_id=tokenizer.added_tokens_encoder[tokenizer.special_tokens_map['mask_token']],
-                eos_token_id=tokenizer.added_tokens_encoder[tokenizer.special_tokens_map['eos_token']],
-                pad_token_id=tokenizer.added_tokens_encoder[tokenizer.special_tokens_map['pad_token']],
+                mask_token_id=get_special_tokens(model_name, tokenizer)['mask_token']['id'],
+                eos_token_id=get_special_tokens(model_name, tokenizer)['eos_token']['id'],
+                pad_token_id=get_special_tokens(model_name, tokenizer)['pad_token']['id'],
             )
         output_ids = output.sequences.cpu()
         torch.cuda.empty_cache()
 
-        output_text = tokenizer.decode(output_ids[0][len(tokens['input_ids'][0]):], skip_special_tokens=False)
-        cleaned_text = output_text.replace(tokenizer.special_tokens_map['mask_token'], '').replace(tokenizer.special_tokens_map['eos_token'], '').replace('<|im_end|>', '').strip()
+        # output_text = tokenizer.decode(output_ids[0][len(tokens['input_ids'][0]):], skip_special_tokens=False)
+        clean_output_text = tokenizer.decode(output_ids[0][len(tokens['input_ids'][0]):], skip_special_tokens=True)
 
         cprint(
             'Normal generation ({}): ({})'.format(
@@ -82,7 +82,7 @@ def main(args):
             ),
             'yellow',
         )
-        print('Model\'s Response:', cleaned_text)
+        print('Model\'s Response:', clean_output_text)
         print('-'*100)
 
         with inference_monitor.count():
@@ -102,15 +102,15 @@ def main(args):
                 eager_acceptance_mode=args.eager_acceptance_mode,
                 draft_steps=args.draft_steps,
                 draft_mode=args.draft_mode,
-                mask_token_id=tokenizer.added_tokens_encoder[tokenizer.special_tokens_map['mask_token']],
-                eos_token_id=tokenizer.added_tokens_encoder[tokenizer.special_tokens_map['eos_token']],
-                pad_token_id=tokenizer.added_tokens_encoder[tokenizer.special_tokens_map['pad_token']],
+                mask_token_id=get_special_tokens(model_name, tokenizer)['mask_token']['id'],
+                eos_token_id=get_special_tokens(model_name, tokenizer)['eos_token']['id'],
+                pad_token_id=get_special_tokens(model_name, tokenizer)['pad_token']['id'],
             )
         output_ids = output.sequences.cpu()
         torch.cuda.empty_cache()
 
-        output_text = tokenizer.decode(output_ids[0][len(tokens['input_ids'][0]):], skip_special_tokens=False)
-        cleaned_text = output_text.replace(tokenizer.special_tokens_map['mask_token'], '').replace(tokenizer.special_tokens_map['eos_token'], '').replace('<|im_end|>', '').strip()
+        # output_text = tokenizer.decode(output_ids[0][len(tokens['input_ids'][0]):], skip_special_tokens=False)
+        clean_output_text = tokenizer.decode(output_ids[0][len(tokens['input_ids'][0]):], skip_special_tokens=True)
 
         cprint(
             'FreeDave generation ({}, {}): ({})'.format(
@@ -120,23 +120,22 @@ def main(args):
             ),
             'green',
         )
-        print('Model\'s Response:', cleaned_text)
-        # print('Trajectory:', trajectory)
+        print('Model\'s Response:', clean_output_text)
         print('-'*100)
 
         # Add the response from normal generation to the conversation history by default
-        messages.append({'role': 'assistant', 'content': cleaned_text})
+        messages.append({'role': 'assistant', 'content': clean_output_text})
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--chat_history', type=bool, default=True)
     parser.add_argument('--model_name', type=str, default='Dream-org/Dream-v0-Instruct-7B')
     parser.add_argument('--block_length', type=int, default=32)
-    parser.add_argument('--max_gen_length', type=int, default=256)
-    parser.add_argument('--dual_cache', action='store_true', default=False)
-    parser.add_argument('--eager_acceptance_mode', action='store_true', default=False)
+    parser.add_argument('--max_gen_length', type=int, default=512)
+    parser.add_argument('--dual_cache', type=bool, default=True)
+    parser.add_argument('--sdpa_additive_attention_mask', type=bool, default=True, help='Set to True for Dream and LLaDA')
+    parser.add_argument('--eager_acceptance_mode', type=bool, default=False)
     parser.add_argument('--draft_steps', type=int, default=4)
     parser.add_argument('--draft_mode', type=str, default='tree_attention')
-    parser.add_argument('--sdpa_additive_attention_mask', action='store_true', default=False, help='Set to True for Dream')
     args = parser.parse_args()
     main(args)
