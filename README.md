@@ -16,12 +16,12 @@
   - More standardized evaluation pipeline under [lm-evaluation-harness](https://github.com/EleutherAI/lm-evaluation-harness). The old customized evaluation pipeline following [Trace-RL](https://github.com/Gen-Verse/dLLM-RL) is currently deprecated. 
   - Two draft modes for FreeDave: 
     - `batch_expanding`: copy both cache and current block along the batch dimension; more memory overhead but less computation.
-    - `tree_attention`: copy only current block along the sequence dimension and share cache using a block tree attention mask; much less memory overhead (usually ~10MB) but more computation. 
+    - `tree_attention`: copy only current block along the sequence dimension and share cache using a block tree attention mask; much less memory overhead (usually ~20MB) but more computation. 
     - From our observation, although with more computation, tree_attention mode without frequent cache copy and reduction operations is usually a bit faster than batch_expanding mode. 
-  - Confidence-aware parallel decoding
-    - Previsouly, we followed [Trace-RL](https://github.com/Gen-Verse/dLLM-RL) and used the same configuration as them. Specifically, they **use a temperature of 0.1** for confidence-aware parallel decoding, and under this setting the confidence-aware parallel decoding is not robust, ususally bringing a significant performance drop. 
-    - We currently **set the temperature to 0** for confidence-aware parallel decoding by default. Under this configuration, confidence-aware parallel decoding is more stable and closer to the results reported in [Fast-dLLM](https://github.com/NVlabs/Fast-dLLM).
-    - Additionally, FreeDave can currently build on confidence-aware parallel decoding as well, using a subset-based verification rule. Confidence-aware FreeDave can further boost the inference efficiency while maintaining the generation quality.
+  - Threshold-based parallel decoding
+    - Previsouly, we followed [Trace-RL](https://github.com/Gen-Verse/dLLM-RL) and used the same configuration as them. Specifically, they **use a temperature of 0.1** for threshold-based parallel decoding, which under this setting is not robust, ususally bringing a significant performance drop. 
+    - We currently **set the temperature to 0** for threshold-based parallel decoding by default. Under this configuration, threshold-based parallel decoding is more stable and closer to the results reported in [Fast-dLLM](https://github.com/NVlabs/Fast-dLLM).
+    - Additionally, FreeDave can currently build on threshold-based parallel decoding as well, using a subset-based verification rule. Threshold-based FreeDave can inherit the generation quality of threshold-based parallel decoding and further unlock higher decoding efficiency.
   - Add support for [LLaDA](https://github.com/ML-GSAI/LLaDA)
     - The `modeling_llada.py` file on huggingface is not directly compatible with the cache implementation under our generation pipeline. We made some modifications.
 #### **(09/23/2025) Current Supported Models**: [TraDo](https://github.com/Gen-Verse/dLLM-RL), [SDAR](https://github.com/JetAstra/SDAR), [Dream](https://github.com/DreamLM/Dream)
@@ -36,6 +36,11 @@ The generation and verification of the draft candidates can be understood as byp
 
 <p align="center">
   <img src="assets/FreeDave_pipeline.png" width="100%"/>
+</p>
+
+### Experimental Results
+<p align="center">
+  <img src="assets/benchmarks.png" width="100%"/>
 </p>
 
 ## Repo Structure
