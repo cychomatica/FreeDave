@@ -42,27 +42,43 @@ DEFAULT_SYSTEM_PROMPT = "You are a helpful assistant."
 
 
 def _inference_summary_table(summary: dict) -> str:
-    """One header row (metric names) + one value row; middle row is Markdown ``---`` separator."""
-    keys: List[str] = []
-    vals: List[str] = []
-    for k, v in summary.items():
-        if v is None:
+    """Render inference and GPU memory metrics as separate Markdown tables."""
+    memory_metrics = {
+        "GPU Model Load Allocated (MiB)",
+        "GPU Peak Allocated (MiB)",
+        "GPU Peak Reserved (MiB)",
+    }
+    regular_items = [
+        (k, v) for k, v in summary.items() if k not in memory_metrics
+    ]
+    memory_items = [
+        (k, v) for k, v in summary.items() if k in memory_metrics
+    ]
+    tables: List[str] = []
+    for metrics in (regular_items, memory_items):
+        keys: List[str] = []
+        vals: List[str] = []
+        for k, v in metrics:
+            if v is None:
+                continue
+            keys.append(str(k).replace("|", "/"))
+            val = f"{v:.6g}" if isinstance(v, float) else str(v)
+            vals.append(val.replace("|", "/"))
+        if not keys:
             continue
-        keys.append(str(k).replace("|", "/"))
-        val = f"{v:.6g}" if isinstance(v, float) else str(v)
-        vals.append(val.replace("|", "/"))
-    if not keys:
+        cell_widths = [max(len(key), len(val)) for key, val in zip(keys, vals)]
+        tables.append(
+            "|"
+            + "|".join(key.center(width) for key, width in zip(keys, cell_widths))
+            + "|\n|"
+            + "|".join("-" * width for width in cell_widths)
+            + "|\n|"
+            + "|".join(val.rjust(width) for val, width in zip(vals, cell_widths))
+            + "|\n"
+        )
+    if not tables:
         return ""
-    cell_widths = [max(len(key), len(val)) for key, val in zip(keys, vals)]
-    return (
-        "\n\n|"
-        + "|".join(key.center(width) for key, width in zip(keys, cell_widths))
-        + "|\n|"
-        + "|".join("-" * width for width in cell_widths)
-        + "|\n|"
-        + "|".join(val.rjust(width) for val, width in zip(vals, cell_widths))
-        + "|\n"
-    )
+    return "\n\n" + "\n".join(tables)
 
 
 @register_model("trado")
@@ -127,10 +143,17 @@ class Trado(LM):
                 "generated_tokens": tok_i,
             },
         }
-        if torch.cuda.is_available():
-            payload["summary"]["GPU Peak Mem (MB)"] = (
-                torch.cuda.max_memory_reserved()
-                / (1024**2)
+        model_load_allocated = getattr(inst, "_model_load_allocated_bytes", None)
+        if model_load_allocated is not None:
+            payload["summary"]["GPU Model Load Allocated (MiB)"] = (
+                model_load_allocated / (1024**2)
+            )
+        if torch.cuda.is_available() and inst.device.type == "cuda":
+            payload["summary"]["GPU Peak Allocated (MiB)"] = (
+                torch.cuda.max_memory_allocated(inst.device) / (1024**2)
+            )
+            payload["summary"]["GPU Peak Reserved (MiB)"] = (
+                torch.cuda.max_memory_reserved(inst.device) / (1024**2)
             )
         if getattr(inst, "_world_size", 1) > 1:
             payload = {
@@ -314,7 +337,21 @@ class Trado(LM):
         self.batch_size_per_gpu = batch_size
         if isinstance(batch_size, str):
             self.batch_size_per_gpu = int(batch_size)
+
+        self._model_load_allocated_bytes = None
+        model_load_allocated_before = None
+        if torch.cuda.is_available() and self.device.type == "cuda":
+            torch.cuda.synchronize(self.device)
+            model_load_allocated_before = torch.cuda.memory_allocated(self.device)
+
         self._create_model_and_tokenizer(pretrained, dtype, trust_remote_code)
+
+        if model_load_allocated_before is not None:
+            torch.cuda.synchronize(self.device)
+            self._model_load_allocated_bytes = max(
+                torch.cuda.memory_allocated(self.device) - model_load_allocated_before,
+                0,
+            )
 
         if isinstance(pretrained, str):
             if gpus >= 1 or str(self.device) == "mps":
@@ -390,6 +427,7 @@ class Trado(LM):
         self.early_exit = kwargs.get('early_exit', False)
 
         self.confidence_threshold = kwargs.get('confidence_threshold', None)
+        self.pathwise_sampling = kwargs.get('pathwise_sampling', False)
 
         if self.decoding_alg == 'freedave':
             self.draft_steps = kwargs.get('draft_steps', 4)
@@ -400,9 +438,23 @@ class Trado(LM):
             self.draft_mode = None
             self.eager_acceptance_mode = None
 
+        if (
+            self.decoding_alg == 'freedave'
+            and self.draft_mode == 'debug'
+            and self.temperature > 0
+            and not self.pathwise_sampling
+        ):
+            raise ValueError(
+                "temperature > 0 with draft_mode=debug requires "
+                "pathwise_sampling=true in both the static and FreeDave runs"
+            )
+        if self.pathwise_sampling:
+            self._configure_pathwise_reference_model()
+
         self.dlm_generation = DLMGeneration(
             sdpa_additive_attention_mask=False,
-            device=self.device
+            device=self.device,
+            seed=int(torch.initial_seed()),
         )
         self.inference_monitor = ForwardMonitor(self.model)
         
@@ -413,6 +465,7 @@ class Trado(LM):
             "num_proposed_tokens": [],
             "num_hit_tokens": []
         }
+        self._gpu_memory_tracking_started = False
 
         # Optional sidecar JSON / log line: handled in ``_emit_inference_stats_for_eval`` when lm_eval saves.
         self._inference_stats_json = kwargs.get("inference_stats_json") or os.environ.get(
@@ -440,6 +493,40 @@ class Trado(LM):
     @property
     def world_size(self):
         return self._world_size
+
+    def _configure_pathwise_reference_model(self) -> None:
+        """Replace fused TraDo kernels with deterministic reference forwards."""
+
+        def rms_norm_forward(module, hidden_states):
+            input_dtype = hidden_states.dtype
+            normalized = hidden_states.to(torch.float32)
+            variance = normalized.pow(2).mean(dim=-1, keepdim=True)
+            normalized = normalized * torch.rsqrt(
+                variance + module.variance_epsilon
+            )
+            return module.weight * normalized.to(input_dtype)
+
+        def mlp_forward(module, hidden_states):
+            return module.down_proj(
+                module.act_fn(module.gate_proj(hidden_states))
+                * module.up_proj(hidden_states)
+            )
+
+        patched_rms_norms = 0
+        patched_mlps = 0
+        for module in self.model.modules():
+            class_name = module.__class__.__name__
+            if class_name == "SDARRMSNorm":
+                module.forward = types.MethodType(rms_norm_forward, module)
+                patched_rms_norms += 1
+            elif class_name == "SDARMLP":
+                module.forward = types.MethodType(mlp_forward, module)
+                patched_mlps += 1
+        eval_logger.info(
+            "Pathwise reference kernels: patched %d RMSNorm and %d MLP modules",
+            patched_rms_norms,
+            patched_mlps,
+        )
 
     def _create_model_and_tokenizer(self, pretrained, dtype, trust_remote_code):
         self.model = (
@@ -537,6 +624,7 @@ class Trado(LM):
                     pad_token_id=self.pad_token_id,
                     confidence_threshold=self.confidence_threshold,
                     early_exit=self.early_exit,
+                    pathwise_sampling=self.pathwise_sampling,
                 )
         elif self.decoding_alg == 'freedave':
             with self.inference_monitor.count():
@@ -560,6 +648,7 @@ class Trado(LM):
                     pad_token_id=self.pad_token_id,
                     confidence_threshold=self.confidence_threshold,
                     early_exit=self.early_exit,
+                    pathwise_sampling=self.pathwise_sampling,
                 )
         else:
             raise NotImplementedError('Decoding algorithm not supported: {}'.format(self.decoding_alg))
@@ -584,6 +673,16 @@ class Trado(LM):
 
     def generate_until(self, requests: List[Instance], disable_tqdm: bool = False):
         res = []
+
+        if (
+            requests
+            and not self._gpu_memory_tracking_started
+            and self.device.type == "cuda"
+        ):
+            torch.cuda.synchronize(self.device)
+            torch.cuda.empty_cache()
+            torch.cuda.reset_peak_memory_stats(self.device)
+            self._gpu_memory_tracking_started = True
 
         pbar = tqdm(
             total=len(requests),

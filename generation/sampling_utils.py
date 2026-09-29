@@ -27,7 +27,13 @@ def top_p_logits(logits, p):
     )
     return logits.masked_fill(mask_indices, -torch.inf)
 
-def sample_tokens(logits, temperature=1.0, top_k=None, top_p=None):
+def sample_tokens(
+    logits,
+    temperature=1.0,
+    top_k=None,
+    top_p=None,
+    generator=None,
+):
     orig_shape = logits.shape[:-1]
     vocab_size = logits.shape[-1]
     logits = logits.reshape(-1, vocab_size)
@@ -42,6 +48,6 @@ def sample_tokens(logits, temperature=1.0, top_k=None, top_p=None):
     logits = top_k_logits(logits, top_k)
     logits = top_p_logits(logits, top_p)
     probs = F.softmax(logits, dim=-1)
-    token = torch.multinomial(probs, num_samples=1)
+    token = torch.multinomial(probs, num_samples=1, generator=generator)
     token_prob = torch.gather(probs, -1, token)
     return token.view(*orig_shape), token_prob.view(*orig_shape)

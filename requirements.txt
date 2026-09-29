@@ -33,3 +33,4 @@ antlr4-python3-runtime==4.11
 einops
 typing_extensions
 matplotlib
+deprecated
